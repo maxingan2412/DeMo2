@@ -1,163 +1,34 @@
-<p align="center">
-
-  <h1 align="center">DeMo: Decoupled Feature-Based Mixture of Experts for Multi-Modal Object Re-Identification</h1>
-  <p align="center">
-    <img src="results/logo.png" alt="Description of the image" style="width:54%;">
-  <p align="center">
-
-[//]: # (  <p align="center">)
-
-[//]: # (    <img src="https://github.com/924973292/TOP-ReID/assets/89966785/e56e96f1-aa08-47f6-b34d-ae3b7d110060" alt="Description of the image" width="400" height="395">)
-
-[//]: # (  <p align="center">)
-  <p align="center">
-    <a href="https://scholar.google.com/citations?user=WZvjVLkAAAAJ&hl=zh-CN" rel="external nofollow noopener" target="_blank"><strong>Yuhao Wang</strong></a>
-    ·
-    <a href="https://dblp.org/pid/51/3710-66.html" rel="external nofollow noopener" target="_blank"><strong>Yang Liu</strong></a>
-    ·
-    <a href="https://ai.ahu.edu.cn/2022/0407/c19212a283203/page.htm" rel="external nofollow noopener" target="_blank"><strong>Aihua Zheng</strong></a>
-    ·
-    <a href="https://scholar.google.com/citations?user=MfbIbuEAAAAJ&hl=zh-CN" rel="external nofollow noopener" target="_blank"><strong>Pingping Zhang*</strong></a>
-  </p>
-<p align="center">
-    <a href="https://arxiv.org/pdf/2412.10650" rel="external nofollow noopener" target="_blank">AAAI 2025 Paper</a>
-
-<p align="center">
-    <img src="results/Overall.png" alt="RGBNT201 Results" style="width:100%;">
-</p>
-
-**DeMo** is an advanced multi-modal object Re-Identification (ReID) framework designed to tackle dynamic imaging quality variations across modalities. By employing decoupled features and a novel Attention-Triggered Mixture of Experts (ATMoE), DeMo dynamically balances modality-specific and modality-shared information, enabling robust performance even under missing modality conditions. The framework sets new benchmarks for multi-modal and missing-modality object ReID.
-
-## News
-- We released the **DeMo** codebase and paper! 🚀 [Paper](https://arxiv.org/pdf/2412.10650)
-- Great news! Our paper has been accepted to **AAAI 2025**! 🎉
----
-
-## Table of Contents
-- [Introduction](#introduction)
-- [Contributions](#contributions)
-- [Results](#results)
-- [Visualizations](#visualizations)
-- [Reproduction](#reproduction)
-- [Citation](#citation)
-
----
-
-## **Introduction**
-
-Multi-modal object ReID combines the strengths of different modalities (e.g., RGB, NIR, TIR) to achieve robust identification across challenging scenarios. **DeMo** introduces a decoupled approach using Mixture of Experts (MoE) to preserve modality uniqueness and enhance diversity. This is achieved through:
-1. **Patch-Integrated Feature Extractor (PIFE)**: Captures multi-granular representations.
-2. **Hierarchical Decoupling Module (HDM)**: Separates modality-specific and shared features.
-3. **Attention-Triggered Mixture of Experts (ATMoE)**: Dynamically adjusts feature importance with adaptive attention-guided weights.
-
----
-
-## **Contributions**
-
-- Introduced a decoupled feature-based MoE framework, **DeMo**, addressing dynamic quality changes in multi-modal imaging.
-- Developed the **Hierarchical Decoupling Module (HDM)** for enhanced feature diversity and **Attention-Triggered Mixture of Experts (ATMoE)** for context-aware weighting.
-- Achieved state-of-the-art performance on RGBNT201, RGBNT100, and MSVR310 benchmarks under both full and missing-modality settings.
-
----
-
-## **Results**
-### Multi-Modal Object ReID
-#### Multi-Modal Person ReID [RGBNT201]
-<p align="center">
-  <img src="results/RGBNT201.png" alt="RGBNT201 Results" style="width:100%;">
-</p>
-
-#### Multi-Modal Vehicle ReID [RGBNT100 & MSVR310]
-<p align="center">
-    <img src="results/RGBNT100_MSVR310.png" alt="RGBNT100 Results" style="width:100%;">
-</p>
-
-### Missing-Modality Object ReID
-#### Missing-Modality Performance [RGBNT201]
-<p align="center">
-    <img src="results/RGBNT201_M.png" alt="RGBNT201 Missing-Modality" style="width:100%;">
-</p>
-
-#### Missing-Modality Performance [RGBNT100]
-<p align="center">
-    <img src="results/RGBNT100_M.png" alt="RGBNT100 Missing-Modality" style="width:100%;">
-</p>
-
-### Ablation Studies [RGBNT201]
-<p align="center">
-    <img src="results/Ablation.png" alt="RGBNT201 Ablation" style="width:100%;">
-</p>
-
----
-
-## **Visualizations**
-
-### Feature Distribution (t-SNE)
-<p align="center">
-    <img src="results/tsne.png" alt="t-SNE" style="width:100%;">
-</p>
-
-### Decoupled Features
-<p align="center">
-    <img src="results/Decoupled.png" alt="Decoupled Features" style="width:100%;">
-</p>
-
-### Rank-list Visualization
-<p align="center">
-    <img src="results/rank-list.png" alt="Rank-list" style="width:100%;">
-</p>
-
----
-
-## **Reproduction**
-
-### Datasets
-- **RGBNT201**: [Google Drive](https://drive.google.com/drive/folders/1EscBadX-wMAT56_It5lXY-S3-b5nK1wH)  
-- **RGBNT100**: [Baidu Pan](https://pan.baidu.com/s/1xqqh7N4Lctm3RcUdskG0Ug) (Code: `rjin`)  
-- **MSVR310**: [Google Drive](https://drive.google.com/file/d/1IxI-fGiluPO_Ies6YjDHeTEuVYhFdYwD/view?usp=drive_link)
-
-### Pretrained Models
-- **ViT-B**: [Baidu Pan](https://pan.baidu.com/s/1YE-24vSo5pv_wHOF-y4sfA)  (Code: `vmfm`)
-- **CLIP**: [Baidu Pan](https://pan.baidu.com/s/1YPhaL0YgpI-TQ_pSzXHRKw) (Code: `52fu`)
-
-### Configuration
-- RGBNT201: `configs/RGBNT201/DeMo.yml`  
-- RGBNT100: `configs/RGBNT100/DeMo.yml`  
-- MSVR310: `configs/MSVR310/DeMo.yml`
+好的 我现在要引入 @seps_modules_reviewed_v2_enhanced.py  里的模块进入这个项目。但是我要做如下修改：
+  1.我只用SDTPS部分 其他的模块不需要
+2. 具体来说 原模块是用图像自身 ，稀疏文本，稠密文本 生成四个score。然后 组合score 然后用这个 gumbel 生成 一些 weight matrix 用来选择token，
+我们的改动是这样：1.我们的输入是 rgb nir tir 三种图像 所以 比如对于 rgb 来说 我们 用 sapn生成 rgb 自身的 score + nir全局特征对rgb的score+ tir全局特征对rgb的score + 图像自注意力的 Image-Salient (s^im) score
+这四部分作为新的score 输入到 gumbel 生成 weight matrix 用来选择token， 对于 nir 和 tir 也是类似的操作。 也就是说我们改变了输入的源。其他组合方式不变。
+   3. 具体的改动部分 ，在make_model.py里面 
+                   RGB_global = self.rgb_reduce(torch.cat([RGB_global, RGB_local], dim=-1))
+                   NI_global = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))
+                   TI_global = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))
+   把这个就作为 要和对应patch做cross attn的特征，其他输入应该你们能看懂吧。如果你有不确定的地方可以问我，让我们一步步完成
 
 
-### Training
-```bash
-conda create -n DeMo python=3.8.12 -y 
-conda activate DeMo
-pip install torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
-cd (your_path)
-pip install -r requirements.txt
-python train_net.py --config_file configs/RGBNT201/DeMo.yml
-```
-### Notes
-- This repository is based on [MambaPro](https://github.com/924973292/MambaPro). The prompt and adapter tuning on the CLIP backbone are reserved (the corresponding hyperparameters are set to `False`), allowing users to explore them independently.  
-- This code provides multi-modal Grad-CAM visualization, multi-modal ranking list generation, and t-SNE visualization tools to facilitate further research.  
-- The hyperparameter configuration is designed to ensure compatibility with devices equipped with less than 24GB of memory.   
-- Thank you for your attention and interest!
+1 是   Predictive Score (s^p) - MLP预测
 
----
+  # 输入：每个patch自己的特征
+  v_i  # (B, N, C) - patch特征
 
-## Star History
+  # MLP网络
+  s^p = Sigmoid(Linear(GELU(Linear(v_i, C//4)), 1))
+      # (B,N,C) → (B,N,128) → (B,N,1) → (B,N)
 
-[![Star History Chart](https://api.star-history.com/svg?repos=924973292/DeMo&type=Date)](https://star-history.com/#924973292/DeMo&Date)
+  # 含义：MLP学习预测"这个patch本身有多重要"
+  # 不依赖任何外部信息，纯粹看patch自己
+你应该能在 seps_modules_reviewed_v2.py 里找到对应的代码实现
 
----
+2.暂时就用这个形式
 
-## **Citation**
+3.总之原则就是 我要用这个模块实现类似 token selection 和 增强的作用。 尽量保留原有的设计思路和过程。 这个机制要在hdm之前完成。或者说事实上 我们要用和这个机制替换掉 hdm 和atm也就是这俩都不要了，你可以写一个新的类或者有新的变量 让我们开启的时候就走这条路。
 
-If you find **DeMo** helpful in your research, please consider citing:
-```bibtex
-@inproceedings{wang2025DeMo,
-  title={DeMo: Decoupled Feature-Based Mixture of Experts for Multi-Modal Object Re-Identification},
-  author={Wang, Yuhao and Liu, Yang and Zheng, Aihua and Zhang, Pingping},
-  booktitle={Proceedings of the AAAI Conference on Artificial Intelligence},
-  year={2025}
-}
-```
 
+
+我有几个问题
+1._compute_self_attention _compute_cross_attention 的计算 和原来的seps_modules_reviewed_v2.py 里的一样吗？ 你严格按照原来的写法吗？ 还是说有改动？ 你能帮我确认一下吗？里面是没有可学习参数吗？我不太确定 因为正常的 self attn 和 cross attn 是有可学习参数的。
+2.         if self.use_gumbel:这里似乎不管用不用对最后的结果都没造成任何影响，因为我们已经得到了要选择出来的token了 如果想要这个发挥作用，应该怎么修改呢，你可以读一下tex文件这个文件是一个论文里面讲了我们借鉴的这个模块也就是sdtps的原理和设计思路，你帮我看看 这个use_gumbel到底是干嘛的，怎么发挥的作用

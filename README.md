@@ -161,3 +161,34 @@ If you find **DeMo** helpful in your research, please consider citing:
 }
 ```
 
+> 我发现了几个问题
+  1             # Hard mask
+              hard_mask = torch.zeros_like(score).scatter(1, keep_policy, 1.0)
+
+              # Straight-Through Estimator
+              score_mask = hard_mask + (soft_mask - soft_mask.detach()) 这里 直接把 soft mask减没了 拿给他也没发挥作用吧
+  2         # 生成聚合权重 logits
+          weight = self.weight(x)               # (B, N_s, C) → (B, N_s, N_c)
+          weight = weight.transpose(2, 1)       # (B, N_s, N_c) → (B, N_c, N_s)
+          weight = weight * self.scale          # 可学习缩放
+
+          # 如果有keep_policy，用它来mask无效位置
+          if keep_policy is not None:
+              keep_policy = keep_policy.unsqueeze(1)  # (B, N_s) → (B 这里的  keep policy 总是全1  因为已经完成了 token selection 这里不是必然失效吗
+  3.        # Step 2: TokenSparse - 选择显著patches
+          rgb_select, rgb_extra, rgb_mask, rgb_selected_mask, rgb_indices = self.rgb_sparse(
+              tokens=RGB_cash,
+              self_attention=rgb_self_attn,
+              cross_attention_m2=rgb_nir_cross,
+              cross_attention_m3=rgb_tir_cross,
+              beta=self.beta,
+          )  # (B, N_s, C), (B, 1, C), (B, N), (B, N_s), (B, N_s)
+
+          # Step 3: TokenAggregation - 聚合patches（传递 selected_mask！）
+          rgb_aggr = self.rgb_aggr(
+              x=rgb_select,
+              keep_policy=rgb_selected_mask  # ← 关键：传递 Gumbel 生成的 mask！
+          )  # (B, N_s, C) → (B, N_c, C)
+
+          # Step 4: 拼接聚合tokens和extra token
+          RGB_enhanced = torch.cat([rgb_aggr, rgb_extra], dim=1)  # (B, N_c+1, C)这里 是不是 

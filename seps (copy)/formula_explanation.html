@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>公式7 - L_ratio 详细解释</title>
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 20px;
+            line-height: 1.6;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #34495e;
+            margin-top: 30px;
+            border-left: 4px solid #3498db;
+            padding-left: 10px;
+        }
+        .formula-box {
+            background-color: #ecf0f1;
+            padding: 20px;
+            border-radius: 5px;
+            margin: 20px 0;
+            border-left: 4px solid #3498db;
+        }
+        .symbol {
+            background-color: #e8f4f8;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 5px;
+            border-left: 3px solid #3498db;
+        }
+        .symbol strong {
+            color: #2980b9;
+        }
+        .note {
+            background-color: #fff3cd;
+            padding: 15px;
+            border-radius: 5px;
+            border-left: 4px solid #ffc107;
+            margin: 15px 0;
+        }
+        .highlight {
+            background-color: #d4edda;
+            padding: 15px;
+            border-radius: 5px;
+            border-left: 4px solid #28a745;
+            margin: 15px 0;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+        th {
+            background-color: #3498db;
+            color: white;
+        }
+        tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+        code {
+            background-color: #f4f4f4;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>公式7：比例约束损失 \(\mathcal{L}_{\text{ratio}}\) 详细解释</h1>
+
+        <h2>📐 完整公式</h2>
+        <div class="formula-box">
+            <p style="font-size: 1.2em; text-align: center;">
+                \[
+                \mathcal{L}_{\text{ratio}} = \left( \rho - \lambda_1 \cdot \frac{1}{N_s} \sum_{i=1}^{N_s} (D_s)_i - \lambda_2 \cdot \frac{1}{N_d} \sum_{i=1}^{N_d} (D_d)_i \right)^2
+                \]
+            </p>
+        </div>
+
+        <h2>🔤 各符号详细含义</h2>
+
+        <div class="symbol">
+            <strong>\(\mathcal{L}_{\text{ratio}}\)</strong> - 比例约束损失（Ratio Constraint Loss）
+            <p>用于约束模型选择的patch数量，确保选择比例接近目标值</p>
+        </div>
+
+        <div class="symbol">
+            <strong>\(\rho\)</strong> (rho) - 目标选择比例（Target Selection Ratio）
+            <p>
+                设定期望保留的patch比例：<br>
+                • ViT架构：\(\rho = 0.5\)（保留50%的patches）<br>
+                • Swin架构：\(\rho = 0.8\)（保留80%的patches）
+            </p>
+        </div>
+
+        <div class="symbol">
+            <strong>\(\lambda_1\)</strong> - 稀疏文本权重系数
+            <p>论文中设置为 <strong>1</strong>，用于平衡稀疏文本视角的贡献</p>
+        </div>
+
+        <div class="symbol">
+            <strong>\(\lambda_2\)</strong> - 密集文本权重系数
+            <p>论文中设置为 <strong>1</strong>，用于平衡密集文本视角的贡献</p>
+        </div>
+
+        <div class="symbol">
+            <strong>\(N_s\)</strong> - 稀疏文本选出的patch总数
+            <p>基于sparse text（原始标注）选择出的显著视觉patches数量</p>
+        </div>
+
+        <div class="symbol">
+            <strong>\(N_d\)</strong> - 密集文本选出的patch总数
+            <p>基于dense text（MLLM生成的详细描述）选择出的显著视觉patches数量</p>
+        </div>
+
+        <div class="symbol">
+            <strong>\((D_s)_i\)</strong> 和 <strong>\((D_d)_i\)</strong> - 决策矩阵元素（Decision Matrix Elements）
+            <p>
+                二值化的选择结果：<br>
+                • <strong>1</strong>：该patch被选中（显著的、相关的）<br>
+                • <strong>0</strong>：该patch被丢弃（冗余的、不相关的）
+            </p>
+        </div>
+
+        <h2>💡 公式的物理意义</h2>
+
+        <div class="formula-box">
+            <p><strong>实际选择比例的计算：</strong></p>
+            <p style="text-align: center;">
+                \[
+                \text{实际比例} = \lambda_1 \cdot \underbrace{\frac{1}{N_s} \sum_{i=1}^{N_s} (D_s)_i}_{\text{稀疏文本选择比例}} + \lambda_2 \cdot \underbrace{\frac{1}{N_d} \sum_{i=1}^{N_d} (D_d)_i}_{\text{密集文本选择比例}}
+                \]
+            </p>
+        </div>
+
+        <p>整个损失函数就是 <strong>(目标比例 - 实际比例)²</strong>，这是一个标准的均方误差（MSE）损失。</p>
+
+        <h2>🎯 为什么 ρ 选择 0.5？</h2>
+
+        <div class="highlight">
+            <h3>实验验证结果（ViT-Base-224）：</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>\(\rho\) 值</th>
+                        <th>Text-to-Image R@1</th>
+                        <th>Image-to-Text R@1</th>
+                        <th>rSum</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>0.3</td>
+                        <td>87.5%</td>
+                        <td>87.4%</td>
+                        <td>561.2</td>
+                    </tr>
+                    <tr>
+                        <td>0.4</td>
+                        <td>87.1%</td>
+                        <td>87.0%</td>
+                        <td>562.8</td>
+                    </tr>
+                    <tr style="background-color: #d4edda; font-weight: bold;">
+                        <td>0.5 ⭐</td>
+                        <td>86.6%</td>
+                        <td>86.5%</td>
+                        <td><strong>564.3</strong></td>
+                    </tr>
+                    <tr>
+                        <td>0.6</td>
+                        <td>86.9%</td>
+                        <td>87.0%</td>
+                        <td>562.8</td>
+                    </tr>
+                    <tr>
+                        <td>0.7</td>
+                        <td>87.3%</td>
+                        <td>87.5%</td>
+                        <td>561.3</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="note">
+            <h3>📊 选择 \(\rho = 0.5\) 的三大原因：</h3>
+            <ol>
+                <li><strong>最优性能平衡点</strong>：在ViT-Base-224上达到最高rSum（564.3）</li>
+                <li><strong>信息冗余与保留的平衡</strong>：
+                    <ul>
+                        <li>ViT的14×14 patches = 196个patches</li>
+                        <li>保留50% ≈ 98个patches</li>
+                        <li>既去除了冗余信息，又保留了关键语义</li>
+                    </ul>
+                </li>
+                <li><strong>性能曲线特征</strong>：ViT对ρ值敏感，在0.5附近达到峰值</li>
+            </ol>
+        </div>
+
+        <div class="note">
+            <h3>🔄 不同架构的差异：</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>模型</th>
+                        <th>Patch大小</th>
+                        <th>Patch总数</th>
+                        <th>最优 \(\rho\)</th>
+                        <th>保留数量</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>ViT-Base-224</td>
+                        <td>16×16</td>
+                        <td>14×14 = 196</td>
+                        <td>0.5</td>
+                        <td>~98个</td>
+                    </tr>
+                    <tr>
+                        <td>ViT-Base-384</td>
+                        <td>16×16</td>
+                        <td>24×24 = 576</td>
+                        <td>0.5</td>
+                        <td>~288个</td>
+                    </tr>
+                    <tr>
+                        <td>Swin-Base-224</td>
+                        <td>32×32</td>
+                        <td>7×7 = 49</td>
+                        <td>0.8</td>
+                        <td>~39个</td>
+                    </tr>
+                    <tr>
+                        <td>Swin-Base-384</td>
+                        <td>32×32</td>
+                        <td>12×12 = 144</td>
+                        <td>0.8</td>
+                        <td>~115个</td>
+                    </tr>
+                </tbody>
+            </table>
+            <p><strong>观察</strong>：Swin的patch更大但数量更少，需要保留更高比例（80%）来维持足够的视觉信息。</p>
+        </div>
+
+        <h2>🎓 损失函数的作用</h2>
+        <ol>
+            <li><strong>稳定训练</strong>：防止选择比例剧烈波动</li>
+            <li><strong>约束优化目标</strong>：确保模型不会选择过多（增加计算量）或过少（丢失信息）的patches</li>
+            <li><strong>双视角监督</strong>：同时考虑稀疏文本和密集文本的选择结果</li>
+            <li><strong>可微分优化</strong>：通过梯度下降进行端到端训练</li>
+        </ol>
+
+        <h2>📝 总结</h2>
+        <div class="highlight">
+            <p><strong>核心思想：</strong></p>
+            <p>\(\mathcal{L}_{\text{ratio}}\) 通过均方误差损失，使模型学会自动选择合适数量的视觉patches，
+            既要保留足够的语义信息（不能太少），又要去除冗余信息（不能太多）。</p>
+            <p>对于ViT架构，<strong>\(\rho = 0.5\)</strong> 在实验中被证明是最优的平衡点。</p>
+        </div>
+    </div>
+</body>
+</html>
