@@ -44,6 +44,12 @@ def give_supported_ops():
             "aten::scatter": elementwise_flop_counter(1, 1),
             "aten::gather": elementwise_flop_counter(1, 1),
             "aten::adaptive_max_pool2d": elementwise_flop_counter(1, 0),
+            # SDTPS 相关操作（可选）
+            "aten::adaptive_avg_pool1d": elementwise_flop_counter(1, 0),
+            "aten::norm": elementwise_flop_counter(1, 1),
+            "aten::clamp_min": elementwise_flop_counter(0, 1),
+            "aten::expand_as": elementwise_flop_counter(0, 0),
+            "aten::min": elementwise_flop_counter(1, 0),
             "prim::PythonOp.CrossScan": None,  # just some add or reshape transform
             "prim::PythonOp.CrossMerge": None,  # just some add or reshape transform
             # No use in DeMo

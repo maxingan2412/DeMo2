@@ -33,6 +33,13 @@ _C.MODEL.ADAPTER = False # From MambaPro
 _C.MODEL.FROZEN = False # whether to freeze the backbone
 _C.MODEL.HDM = False # whether to use HDM in DeMo
 _C.MODEL.ATM = False # whether to use ATM in DeMo
+# SDTPS: Sparse and Dense Token-Aware Patch Selection
+_C.MODEL.USE_SDTPS = False # whether to use SDTPS (replaces HDM+ATM)
+_C.MODEL.SDTPS_SPARSE_RATIO = 0.5 # token selection ratio (same as paper)
+_C.MODEL.SDTPS_AGGR_RATIO = 0.4 # token aggregation ratio (same as paper)
+_C.MODEL.SDTPS_BETA = 0.25 # score combination weight parameter
+_C.MODEL.SDTPS_USE_GUMBEL = False # whether to use Gumbel-Softmax
+_C.MODEL.SDTPS_GUMBEL_TAU = 1.0 # Gumbel temperature
 # If train with label smooth, options: 'on', 'off'
 _C.MODEL.IF_LABELSMOOTH = 'on'
 # If train with the contact feature

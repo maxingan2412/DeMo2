@@ -1,0 +1,666 @@
+
+\documentclass{article} % For LaTeX2e
+\usepackage{iclr2026_conference,times}
+
+% Optional math commands from https://github.com/goodfeli/dlbook_notation.
+\input{math_commands.tex}
+
+\usepackage{hyperref}
+\usepackage{url}
+
+% --- 你添加的包 (精简后) ---
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{bbding}
+\usepackage{adjustbox}
+\usepackage{amssymb}
+
+\usepackage{subfigure}
+
+\title{SEPS: Semantic-enhanced Patch Slimming Framework for fine-grained cross-modal alignment}
+
+% Authors must not appear in the submitted version. They should be hidden
+% as long as the \iclrfinalcopy macro remains commented out below.
+% Non-anonymous submissions will be rejected without review.
+
+\author{Xinyu Mao, Junsi Li, Haoji Zhang, Yu Liang, Ming Sun\thanks{Corresponding author:\texttt{sunm@uestc.edu.cn}} \\
+School of Computer Science and Engineering\\
+University of Electronic Science and Technology of China\\
+Chengdu,610065, China \\
+}
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+%
+% Using \And between authors leaves it to \LaTeX{} to determine where to break
+% the lines. Using \AND forces a linebreak at that point. So, if \LaTeX{}
+% puts 3 of 4 authors names on the first line, and the last on the second
+% line, try using \AND instead of \And before the third author name.
+
+\newcommand{\fix}{\marginpar{FIX}}
+\newcommand{\new}{\marginpar{NEW}}
+
+\iclrfinalcopy % Uncomment for camera-ready version, but NOT for submission.
+\begin{document}
+
+
+\maketitle
+
+\begin{abstract}
+
+% Fine-grained cross-modal alignment seeks to establish precise local correspondences between vision and language, serving as a fundamental building block for visual question answering and related multimodal tasks.
+% However, existing approaches are fundamentally constrained by patch redundancy and ambiguity, stemming from the inherent information density disparity between modalities—visual inputs provide dense spatial information across numerous patches while textual descriptions offer sparse, discrete semantic anchors. To address these limitations, we argue that richer semantic guidance is key in this paper and propose the Semantic-Enhanced Patch Slimming (SEPS) framework. Our framework propose a two-stage mechanism to fuse unified semantics derived from dense and sparse texts, identifying significant visual patches, and employs relevance-aware selection with mean value computation to emphasize critical patch-word correspondences. Extensive experiments on Flickr30K and MS-COCO datasets demonstrate that SEPS achieves state-of-the-art performance, outperforming existing methods by 23\%-86\% in rSum across various model backbones, with particularly significant improvements in text-to-image retrieval tasks. Our available code is at https://anonymous.4open.science/r/SEPS/.
+
+Fine-grained cross-modal alignment aims to establish precise local correspondences between vision and language, forming a cornerstone for visual question answering and related multimodal applications. Current approaches face challenges in addressing patch redundancy and ambiguity, which arise from the inherent information density disparities across modalities. Recently, Multimodal Large Language Models (MLLMs) have emerged as promising solutions to bridge this gap through their robust semantic generation capabilities. However, the dense textual outputs from MLLMs may introduce conflicts with the original sparse captions. Furthermore, accurately quantifying semantic relevance between rich visual patches and concise textual descriptions remains a core challenge. To overcome these limitations, we introduce the Semantic-Enhanced Patch Slimming (SEPS) framework, which systematically addresses patch redundancy and ambiguity. Our approach employs a two-stage mechanism to integrate unified semantics from both dense and sparse texts, enabling the identification of salient visual patches. Additionally, it leverages relevance-aware selection with mean value computation to highlight crucial patch-word correspondences, thereby improving cross-modal similarity assessment. Comprehensive experiments on Flickr30K and MS-COCO datasets validate that SEPS achieves superior performance, surpassing existing approaches by 23\%-86\% in rSum across diverse model architectures, with notable enhancements in text-to-image retrieval scenarios. Our implementation is available at https://github.com/Sweet4tars/seps.git.
+
+
+\end{abstract}
+
+\section{Introduction}
+
+Fine-grained cross-modal alignment between vision and language has emerged as a cornerstone for establishing precise local correspondences across modalities, serving as the foundation for visual question answering~\citep{guo2019image}, image captioning~\citep{li2019visual-survey}, and cross-modal retrieval~\citep{fu2023learning}. As multimodal applications demand increasingly sophisticated understanding capabilities, achieving accurate alignment between visual patches and semantic concepts has become critical for advancing the field.
+
+Despite this importance, existing cross-modal alignment methods universally face the fundamental challenge of bridging the information gap between modalities. This gap stems from the contrasting nature of cross-modal information representation: visual inputs provide dense, continuous spatial information, while textual descriptions offer sparse, discrete semantic anchors that capture only salient scene aspects. With Vision Transformer (ViT) based models~\citep{dosovitskiy2020image} becoming mainstream through efficient patch-based image processing in fine-grained alignment methods, this information gap manifests itself as two problems: patch redundancy, where numerous visual patches contain overlapping or irrelevant information with no explicit textual counterparts, and patch ambiguity, where sparse textual elements are difficult to map reliably to individual patches. These problems particularly impair text-to-image retrieval performance in complex visual scenarios.
+As illustrated in Figure \ref{fig:motivation}(a), generic captions such as "A woman with a tennis racket about to swing at a ball" lack distinctive visual descriptors, highlighting this inherent information density disparity.
+
+Recently, Multimodal Large Language Models (MLLMs) have emerged as promising solutions to bridge this semantic gap through their robust semantic generation capabilities~\citep{pan2023fine,fu2024linguistic,liu2025novel}. However, MLLM integration introduces semantic inconsistencies, as comprehensive MLLM-generated descriptions may conflict with existing concise captions, potentially causing confusion in cross-modal alignment and degrading retrieval performance.
+Additionally, accurately quantifying semantic relevance between rich visual patches and concise textual descriptions remains challenging, as conventional alignment methods rely on global averaging, failing to recognize that only a subset of patches are semantically relevant, thus allowing irrelevant regions with low similarity scores to dilute the overall alignment quality.
+
+To overcome these limitations, we introduce the Semantic-Enhanced Patch Slimming (SEPS) framework, which systematically addresses both patch redundancy and ambiguity through strategic MLLM integration, as shown in Figure \ref{fig:motivation}(b). Our key insight centers on employing a two-stage mechanism that integrates unified semantics derived from both dense MLLM-generated texts and sparse original captions, where dense texts provide contextual guidance while sparse texts serve as specific queries for salient patch identification.
+
+Specifically, as illustrated in Figure \ref{fig:overview}(a), our framework operates through a comprehensive pipeline: we first extract visual patches alongside sparse-text and dense-text feature representations, then aggregate semantically selected visual patches through Sparse and Dense Text-Aware Patch Selection (SDTPS) module, which makes informed selection decisions based on complementary textual perspectives. Finally, we employ our Highly-Relevant Patch-Word Alignment (HRPA) module with relevance-aware selection and mean value computation to facilitate nuanced fine-grained interactions, amplifying highly-relevant patch-word correspondences and improving alignment quality.
+
+
+\begin{figure}
+    \centering
+    \includegraphics[width=\linewidth]{motivation.pdf}
+    \caption{The motivation of our framework, where blue arrows mean language transformer, and green arrows mean vision transformers. (a) Current works suffer from patch ambiguity and patch redundancy due to the limited semantic guidance. (b) Our framework fuses unified semantic derived from dense and sparse texts to guide visual patch selection, and introduces a relevance-aware selection to improve patch-word alignment, which bridges the semantic gap.}
+    \vspace{-0.5cm}
+    \label{fig:motivation}
+\end{figure}
+
+
+
+
+The contributions of this paper are as follows:
+\begin{itemize}
+    \item To the best of our knowledge, we propose the first systematic framework that strategically employs MLLMs to assist visual patch selection for cross-modal alignment, addressing fundamental patch redundancy and ambiguity challenges.
+    \item We introduce a novel two-stage mechanism that incorporates unified semantic representations derived from both dense and sparse textual modalities. This mechanism eliminates potential semantic inconsistencies, enabling more accurate identification of salient visual patches.
+    \item We develop a relevance-aware selection mechanism augmented by mean value calculation, which enhances the emphasis on critical patch-word correspondences. This design effectively mitigates the averaging bias inherent in traditional methods and improves cross-modal similarity evaluation.
+    \item We achieve superior performance on Flickr30K and MS-COCO datasets, surpassing existing approaches by 23\%-86\% in rSum across diverse model architectures, with notable enhancements in text-to-image retrieval scenarios.
+\end{itemize}
+
+\section{Related Work}
+\label{sec:related work}
+\subsection{Cross-Modal Alignment}
+Cross-modal alignment aims to bridge the semantic gap between vision and language through two primary strategies: coarse-grained and fine-grained alignment. Coarse-grained methods, such as VSE++~\citep{faghri2017vse++}, compute the global similarity between an entire image and a text. In contrast, fine-grained methods achieve more precise matching by modeling interactions between local features, such as specific image regions and individual words. Early approaches relied on object detectors like Faster R-CNN~\citep{girshick2015fast} to extract visual regions, followed by cross-attention mechanisms for alignment, as seen in SCAN~\citep{lee2018stacked}, SGR~\citep{diao2021similarity}, and CHAN~\citep{pan2023fine}. However, this paradigm is computationally expensive, its performance is dependent on the detector's accuracy, and it is prone to error propagation. Recently, end-to-end models based on the Vision Transformer (ViT)~\citep{dosovitskiy2020image} have become mainstream. ViT processes images by dividing them into patches, but this introduces new challenges: patch redundancy and patch ambiguity. To mitigate these problems, recent work like LAPS~\citep{fu2024linguistic} demonstrates the potential of using linguistic supervision to prune redundant patches by leveraging captions from standard datasets. While effective, the semantic sparsity inherent in these captions creates a performance bottleneck, particularly in complex visual scenarios. Building on this foundation, our work addresses this bottleneck by integrating dense semantic guidance with the original sparse text, exploring how this hybrid supervision can unlock further improvements in patch selection.
+
+% \subsection{Vision-Language Pre-training}
+% The current paradigm in Vision-Language Pre-training (VLP) has evolved into powerful Multimodal Large Language Models (MLLMs), dominated by end-to-end, ViT-based architectures that process raw images directly as sequences of patches~\citep{li2023blip, radford2021learning,kim2021vilt}. Despite their success, these models face a significant bottleneck related to processing these long visual token sequences. This incurs substantial computational overhead and can introduce noise from irrelevant patches, hindering fine-grained cross-modal fusion~\citep{fu2024linguistic}. To address this, one line of research has explored techniques such as patch fusion or summarization to create more concise visual representations~\citep{bolya2022token, jiang2023bus}. However, these methods often operate without explicit textual guidance. This highlights a promising alternative: leveraging linguistic supervision to dynamically filter visual inputs, presenting a more targeted avenue for building more efficient and effective VLP models.
+
+\subsection{Information Density and Dense Text Supervision}%或者是The Rise of Dense Text Supervision
+Visual signals are dense, while textual descriptions are relatively sparse, leading to a fundamental information capacity mismatch. This challenge has motivated a significant recent trend: the use of Multimodal Large Language Models (MLLMs) to generate dense text, which provides a much richer supervisory signal to bridge this gap. Several works have begun to leverage this rich data. One line of research focuses on enhancing a model's general long-text capabilities through pre-training, such as in LongCLIP~\citep{zhang2024long} and LoTLIP~\citep{wu2024lotlip}. Other approaches tackle the density mismatch at the feature representation level. For instance, methods learn diverse embedding sets (e.g. PCME~\citep{chun2021probabilistic}) or design asymmetric architectures (e.g. AVSE~\citep{liu2025asymmetric}) to accommodate modal differences, while the prominent D2S-VSE~\citep{liu2025aligning} uses dense text as a "teacher" signal to distill knowledge and enrich sparse text representations.
+
+However, a common thread unites these existing methods: they primarily optimize at the feature representation or alignment stage—either by improving the model's global understanding or by enhancing the textual representations. The granular semantic details within dense text have not been exploited to directly address visual information redundancy at the input level. Therefore, our work explores how to leverage this fine-grained information to directly guide the visual patch selection process, aiming to solve the information mismatch by proactively refining the visual input itself.
+
+\section{Methodology}
+\label{gen_inst}
+
+% 本节详细介绍了semantic-enhanced patch selection（SPS） framework，该模型的核心思路是融合基于MLLMs生成的密集文本和原始的系数文本，通过two-stage mechnisim获取一致性的语义信息，基于此做出更好的visual patch selection，再结合relevance-aware mechanism，解决了引入大模型导致的语义不一致和固有的相似度偏移问题，进而跨越了图片和文本之间的语义鸿沟，解决了对齐方法普遍存在的patch redundancy 和patch ambiguity问题
+
+This section introduces the SEPS framework, which integrates dense textual representations generated by MLLMs with original sparse textual features through a novel two-stage mechanism. Coupled with a relevance-aware mechanism, the framework effectively addresses semantic inconsistency in large model integration and similarity shift bias in existing alignment computation, thereby bridging the semantic gap between visual and textual modalities and resolving patch redundancy and ambiguity issues prevalent in current alignment methodologies.
+The framework architecture encompasses three principal modules: the dense text generation component detailed in Section \ref{sec:dense-text}, the Sparse and Dense Text-Aware Patch Selection Module presented in Section \ref{sec:selection-module} and visualized in Figure \ref{fig:overview}(b), and the Highly-relevant Patch-word Alignment module described in Section \ref{sec:HRPA} and illustrated in Figure \ref{fig:overview}(c).
+
+
+\begin{figure*}
+    \centering
+    \includegraphics[width=\linewidth]{architecture.pdf}
+    \caption{(a) Overview of our Semantic-Enhanced Patch Slimming(SEPS) Framework for fine-grained cross-modal alignment. Given an
+image-text pair $(I, T)$, we first use pure Transformer encoders to extract visual patch features and textual word features. Then, we propose the SDTPS module to identify text-relevant patches under the support of dense text generated by MLLMs. Finally, we propose the HRPA module to compute the patch-word alignment score $S(I, T)$. (b)(c) The detailed architecture of the proposed SDTPS and HRPA modules, respectively.}
+    \vspace{-0.5cm}
+    \label{fig:overview}
+\end{figure*}
+
+\subsection{Dense Text Generation Based on MLLMs}
+\label{sec:dense-text}
+To generate dense textual representations for visual inputs, we employ the pre-trained multimodal model LLaVa~\citep{liu2023llava}. For a given input image $I$, we utilize LLaVa with the instructional prompt \textit{"Provide a comprehensive description of this image"}. The model subsequently generates semantically dense textual output that encodes granular visual information, leveraging its enhanced visual perception capabilities. Implementation details and parameter configurations for LLaVa are specified in Section~\ref{sec:implementation-Details}. This methodology ensures that the linguistic representation maintains informational richness comparable to the visual modality, thereby mitigating the cross-modal information asymmetry inherent in traditional multimodal systems.
+
+\subsection{Sparse and Dense Text-Aware Patch Selection Module}
+\label{sec:selection-module}
+% 该模块第一部分是基于score-aware prediction network，sparse-text patch，dense-text patch以及图像本身的自注意力四方面对vision patch的打分，随后第二部分，根据分数高低，结合decision matrix，将分数映射为0或1的结果，通过aggregation network得到权重矩阵，从而选择出与文本语义强相关的vision patch
+The SDTPS module employs a two-stage mechanism to fuse unified semantics derived from dense and sparse texts, thereby identifying visual patches that exhibit robust semantic alignment with such integrated semantic representations. In the first stage, semantic scoring assigns each visual patch a comprehensive score derived from multiple information sources, including sparse textual features, dense textual features, and intrinsic image characteristics. Subsequently, the second stage employs a decision and aggregation process that utilizes a learned weight matrix to identify and extract the most semantically relevant patches for further alignment.
+
+\subsubsection{Semantic Scoring}
+In first stage, the module employs a score-aware prediction network to assess the semantic relevance of individual visual patches. This network predicts the final scores that each visual patch would obtain from three distinct cross-attention mechanisms, thereby improving the learning capacity of the semantic scoring stage. The network comprises a two-layer MLP followed by a sigmoid activation function.
+\begin{equation}
+\label{prediction network}
+    s_i^p = \sigma \left( \text{MLP} \left( \boldsymbol{v}_i \right) \right), \, i \in \{1, \ldots, N\},
+\end{equation}
+where $s_i^p \in [0,1]$ represents the significance score for the $i$-th patch, and $v_i \in V = \{v_1, v_2, \ldots, v_N\}$ denotes the visual patch feature vector, $\sigma$ means sigmoid activation function. A higher value of $s_i^p$ indicates greater semantic significance of the patch $v_i$. 
+
+This prediction network is primarily integrated with attention scores derived from textual content and image self-attention mechanisms to achieve better cross-modal alignment~\citep{meng2022adavit,rao2021dynamicvit}. However, given that most text in existing datasets is sparse, an information capacity gap emerges between visual and textual modalities. To address this limitation, we leverage dense text generated by MLLMs to enhance the textual relevance of the significance scores $s_i^p$ for visual patches.
+
+Building upon the cross-attention between visual patches and sparse textual representations, we propose an additional attention mechanism: cross-attention between visual patches and dense textual representations. Therefore, the complete attention score computation formula is as follows:
+\begin{equation}
+\begin{aligned}
+    s_i^{st} = \text{Norm}(v_i^T \cdot E_{st} / d) 
+    \quad s_i^{dt} = \text{Norm}(v_i^T \cdot E_{dt}/d) 
+    \quad s_i^{im} = \text{Norm}(v_i^T \cdot E_{im} / d),
+\end{aligned}
+\end{equation}
+where $s_i^{st}$ represents the sparse-text relevance of the visual patch, $s_i^{dt}$ denotes the dense-text relevance of the visual patch, and $s_i^{im}$ represents the significance of the $i$-th patch in the visual dimension. $\text{Norm}$ represents the normalization of attention scores into the $[0,1]$ range to maintain consistency with the outputs of the prediction network $s_i^p$. $E_{st}$, $E_{dt}$, and $E_{im}$ denote the global embedding vectors of sparse text, dense text, and image, respectively. $d$ is the number of embedding dimensions. Finally the total significance score formula with $\beta$ as a weight parameter is as follows,:
+\begin{equation}
+    s_i = (1-2\beta) \cdot s_i^p + \beta \cdot (s_i^{st} + s_i^{dt} + 2s_i^{im})
+\end{equation}
+
+\subsubsection{Decision and Aggregation}
+In second stage, the computed significance scores $s = [s_1, s_2, \ldots, s_N] \in \mathbb{R}^N$ undergo a binary mapping process through a differentiable decision matrix. Compared to naive sampling approaches, such as selecting the top-K patches, the Gumbel-Softmax technique provides smooth and differentiable sampling capabilities\citep{maddison2016concrete}. Based on this technique, we follow the previous sampling methodology to obtain differentiable decision matrices $D_s$ and $D_d$ for sparse-text and dense-text, respectively~\citep{fu2024linguistic}. $D$ is a one-hot matrix where $'1'$ indicates a significant patch and $'0'$ indicates a redundant patch. Based on the sparse-text matrix $D_s$ and dense-text matrix $D_d$, we can select significant patches $V_s = \{ v_1^s, v_2^s, \ldots, v_{N_s}^s\}\in \mathbb{R}^{N_s \times d}$ for sparse-text and $V_d =\{ v_1^d, v_2^d, \ldots, v_{N_d}^d\}\in \mathbb{R}^{N_d \times d}$ for dense-text.
+
+These binary decisions are subsequently processed through an aggregation network that learns multiple aggregation weights~\citep{zong2022self} and aggregates $N_s$ and $N_d$ significant patches to generate $N_c$ informative patches.
+\begin{equation}
+    \hat{v}_j = \sum_{i=1}^{N_s} (W_s)_{ij} \cdot v_i^s + \sum_{i=1}^{N_d}(W_d)_{ij} \cdot v_i^d, \quad j \in \{1, \ldots, N_c\}
+\end{equation}
+where $(W_s)_{ij}$ and $(W_d)_{ij}$ are the elements of the normalized weight matrices $W_s \in \mathbb{R}^{N_s \times N_c}$ and $W_d \in \mathbb{R}^{N_d \times N_c}$. $N_c$ is the number of aggregated patches $(N_c < \max(N_s, N_d))$, and we have $\sum_{i=1}^{N_s}(W_s)_{ij} = 1$ and $\sum_{i=1}^{N_d}(W_d)_{ij} = 1$. The weight matrices $W_s$ and $W_d$ are learned by an MLP followed by a softmax function, taking significant patches based on sparse-text and dense-text as input, respective: $W_s = \text{Softmax}(\text{MLP}(V_s))$ and $W_d = \text{Softmax}(\text{MLP}(V_d))$.
+
+Specifically, we treat the decision matrices $D_s$ and $D_d$ as mask matrices to select the significant patch features $V_s$ and $V_d$ before computing the softmax function. The aggregation network can adaptively aggregate patches with similar semantics and is differentiable for end-to-end training.
+
+\subsection{Highly-Relevant Patch-Word Alignment}
+\label{sec:HRPA}
+The HRPA module introduces relevance-aware selection with mean value computation to facilitate nuanced fine-grained interactions, amplifying highly-relevant patch-word correspondences.
+As shown in Figure.\ref{fig:overview}(c), we compute the fine-grained alignment by the set of selected visual patches $\hat{V}$ and initial sparse textual words $T$. For convenience, we approximate that $|\hat{V}| = N_c$, $|T| = M$. We first calculate the token-wise similarity to generate the patch-word similarity matrix $A \in \mathbb{R}^{N_c \times M}$, where $A_{ij} = \frac{(\hat{v}_i)^T t_j}{\|\hat{v}_i\| \|t_j\|}$ represents the alignment score between the $i$-th visual patch and the $j$-th textual word.
+
+Next, we employ a relevance-aware selection to aggregate the cross-modal alignment, which enhances the contribution of maximally relevant patch-word pairs to image-text similarity, thereby improving alignment quality. We identify the most aligned textual token (or visual patch) for each visual patch (or textual token), and use the relevant learning network to transform the selected maximum scores into a scalar value. Then calculate the average of total aligned scores. The sum of these two values represent the overall alignment score between the image $I$ and the sentence $T$, denoted $S(I, T)$.
+\begin{equation}
+\begin{aligned}
+    S(I, T) &= \underbrace{(\frac{1}{N_c} \sum_{i=1}^{N_c} \max_j (A)_{ij}) + \text{MLP}(\text{TOPK}( \max_j(A)_{ij}))}_{\text{patch-to-word alignment}} \\
+            &+ \underbrace{\frac{1}{M} \sum_{j=1}^{M} \max_i (A)_{ij} + \text{MLP}(\text{TOPK}( \max_i(A)_{ij}))}_{\text{word-to-patch alignment}}
+\end{aligned}
+\end{equation}
+
+\begin{table}[h]
+
+\caption{Comparisons of image-text retrieval performances on Flickr30K and MS-COCO test-set. We list the details of feature encoding, image resolution, and the number of obtained regions/patches by visual encoder (e.g. ``ViT-Base-224'' represents the base-version of Vision Transformer with 224×224 image resolution input, regarding 16×16 pixels as one patch, and getting 14×14 visual patches for one image). FG indicates whether it is the fine-grained cross-modal alignment. The best results are marked \textbf{bold}, and the second best results are marked \underline{underline}.}
+\label{tab:comparison_results}
+% \scriptsize
+\setlength{\tabcolsep}{2pt}
+% \centering
+\adjustbox{width=\textwidth,center}{
+\begin{tabular}{l|c|ccccccc|ccccccc|ccccccc}
+\toprule
+\multirow{3}{*}{Method} & \multirow{3}{*}{FG} & \multicolumn{7}{c|}{Flickr30K 1K} & \multicolumn{7}{c|}{MS-COCO 1K} & \multicolumn{7}{c}{MS-COCO 5K} \\
+% \cmidrule{3-20}
+& & \multicolumn{3}{c}{Image-to-Text} & \multicolumn{3}{c}{Text-to-Image} & \multirow{2}{*}{rSum} 
+&\multicolumn{3}{c}{Image-to-Text}   & \multicolumn{3}{c|}{Text-to-Image} & \multirow{2}{*}{rSum} 
+& \multicolumn{3}{c}{Image-to-Text}  & \multicolumn{3}{c}{Text-to-Image} & \multirow{2}{*}{rSum} \\
+% \cmidrule{3-20}
+& & R@1 & R@5 & R@10 & R@1 & R@5 & R@10 & & R@1 & R@5 & R@10 & R@1 & R@5 & R@10 & & R@1 & R@5 & R@10 & R@1 & R@5 & R@10 & \\
+\midrule
+% \multicolumn{20}{l}{\textit{Faster R-CNN + BERT-Base, 36 pre-computed regions}} \\
+% HREM [14] & {\color{red}\XSolidBrush} & 83.3 & 96.0 & 98.1 & 63.5 & 87.1 & 92.4 & 520.4 
+% & 81.1 & 96.6 & 98.9 & 66.1 & 91.6 & 96.5 & 530.7
+% & 62.3 & 87.6 & 93.4 & 43.9 & 73.6 & 83.3 & 444.1\\
+% TERAN [9] & {\color{green}\Checkmark} & 61.3 & 86.0 & 91.4 & 76.8 & 93.2 & 96.4 & 505.1
+% & 65.4 & 91.8 & 96.5 & 78.5 & 96.4 & 98.9 & 527.5
+% & 43.5 & 73.5 & 83.3 & 57.5 & 84.8 & 91.6 & 434.0\\
+% CHAN [35] & {\color{green}\Checkmark} & 80.6 & 96.1 & 97.8 & 63.9 & 87.5 & 92.6 &518.5
+% & 81.4 & 96.9 & 98.9 & 66.5 & 92.1 & 96.7 & 532.6
+% & 59.8 & 87.2 & 93.3 & 44.9 & 74.5 & 84.2  & 443.9\\
+% \midrule
+\multicolumn{23}{l}{\textit{ViT-Base-224 + BERT-base, 14×14 patches}} \\
+VSE++~\citep{faghri2017vse++}& {\color{red}\XSolidBrush} & 71.8 & 92.8 & 96.5 & 59.4 & 84.7 & 90.9 & 496.1 & 75.0 & 94.6 & 98.0 & 62.7 & 89.4 & 94.9 & 514.6 & 52.4 & 80.3 & 88.8 & 40.6 & 70.4 & 81.1 & 413.4 \\
+SCAN~\citep{lee2018stacked}& {\color{green}\Checkmark} & 69.5 & 90.9 & 95.6 & 56.4 & 83.1 & 90.0 & 485.6 & 76.0 & 95.4 & 98.1 & 64.5 & 90.8 & 95.8 & 520.6 & 53.9 & 81.8 & 90.0 & 42.9 & 72.3 & 82.5 & 423.5 \\
+SGR~\citep{diao2021similarity}& {\color{green}\Checkmark} & 69.7 & 90.8 & 95.2 & 59.1 & 84.1 & 89.9 & 488.7 & 77.2 & 95.0 & 98.0 & 65.1 & 90.7 & 95.8 & 521.8 & 54.9 & 82.8 & 90.5 & 42.8 & 72.2 & 82.5 & 425.8 \\
+CHAN~\citep{pan2023fine}& {\color{green}\Checkmark} & 69.2 & 91.8 & 95.0 & 58.4 & 84.9 & 90.6 & 489.9 & 77.1 & 95.1 & 98.1 & 65.0 & 91.0 & 96.0 & 522.2 & 56.3 & 83.2 & 90.1 & 43.0 & 72.6 & 82.8 & 428.0 \\
+LAPS~\citep{fu2024linguistic}& {\color{green}\Checkmark} & 74.0 & 93.4 & 97.4 & 62.5 & 87.3 & 92.7 & 507.3 & 78.7 & 95.5 & 98.3 & 66.2 & 91.3 & 96.2 & 526.3 & 57.5 & 84.0 & 90.8 & 44.5 & 74.0 & 83.6 & 434.4 \\
+AVSE~\citep{liu2025asymmetric}& {\color{red}\XSolidBrush} & 76.0 & \underline{94.6} & \underline{97.5} & 62.7 & 88.4 & 93.1 & 512.3 & 79.8 & \underline{95.6} & \underline{98.3} & 67.0 & 91.5 & 96.3 & 528.5 & 58.8 & 84.3 & 91.0 & 45.1 & 74.3 & 83.9 & 437.4 \\
+D2S-VSE~\citep{liu2025aligning} & {\color{red}\XSolidBrush} & \underline{82.8} & \textbf{96.1} & \textbf{98.3} & \underline{68.5} & \underline{91.3} & \underline{94.9} & \underline{531.9} & \underline{80.1} & \textbf{97.0} & \textbf{99.2} & \underline{68.1} & \underline{92.5} & \underline{96.7} & \underline{533.7} & \underline{60.1} & \textbf{85.5} & \textbf{92.5} & \underline{46.3} & \underline{75.9} & \underline{85.2} & \underline{445.6} \\
+\textbf{SEPS} & {\color{green}\Checkmark} & \textbf{86.1} & 93.7 & 96.9 & \textbf{86.9} & \textbf{98.1} & \textbf{99.2} & \textbf{560.9} & \textbf{89.0} & 94.8 & 98.0 & \textbf{88.5} & \textbf{99.3} & \textbf{99.8} & \textbf{569.5} & \textbf{73.9} & \underline{85.2} & \underline{92.1} & \textbf{73.5} & \textbf{94.5} & \textbf{97.8} &\textbf{516.9} \\
+\midrule
+\multicolumn{23}{l}{\textit{ViT-Base-384 + BERT-base, 24×24 patches}} \\
+VSE++~\citep{faghri2017vse++}& {\color{red}\XSolidBrush} & 77.1 & 95.7 & 97.5 & 65.8 & 90.2 & 94.3 & 520.5 & 77.0 & 95.7 & 98.4 & 64.6 & 91.1 & 96.2 & 523.0 & 54.9 & 82.8 & 90.4 & 42.4 & 72.4 & 82.8 & 425.8 \\
+SCAN~\citep{lee2018stacked}& {\color{green}\Checkmark} & 75.4 & 94.4 & 96.9 & 63.6 & 88.6 & 93.5 & 512.5 & 76.1 & 95.5 & 98.5 & 65.1 & 91.6 & 96.3 & 523.1 & 53.3 & 81.8 & 90.0 & 42.6 & 72.6 & 82.9 & 423.1 \\
+SGR~\citep{diao2021similarity}& {\color{green}\Checkmark} & 76.9 & 94.9 & 98.1 & 64.2 & 88.4 & 93.3 & 515.8 & 75.8 & 95.7 & 98.6 & 65.6 & 92.0 & 96.5 & 524.2 & 53.3 & 81.0 & 89.6 & 42.9 & 73.1 & 83.7 & 423.6 \\
+CHAN~\citep{pan2023fine} & {\color{green}\Checkmark} & 75.4 & 94.5 & 97.6 & 63.2 & 88.6 & 93.1 & 512.4 & 78.1 & 95.8 & 98.6 & 66.1 & 92.1 & 96.6 & 527.3 & 55.6 & 83.8 & 91.2 & 43.4 & 73.6 & 83.5 & 431.1 \\
+LAPS~\citep{fu2024linguistic} & {\color{green}\Checkmark} & 79.0 & 96.0 & 98.1 & 67.3 & 90.5 & 94.5 & 525.4 & 78.6 & 96.3 & 98.9 & 68.0 & 92.4 & 96.8 & 531.0 & 57.4 & 84.9 & 92.5 & 46.4 & 75.8 & 85.2 & 442.2 \\
+AVSE~\citep{liu2025asymmetric}& {\color{red}\XSolidBrush} & 80.3 & \underline{96.4} & \underline{98.7} & 67.9 & 91.2 & 94.7 & 529.2 & \underline{81.1} & \underline{97.1} & \underline{99.0} & 68.3 & 92.7 & \underline{97.0} & 535.2 & \underline{61.2} & \underline{86.8} & \underline{93.2} & 46.2 & 75.9 & 85.0 & 448.3 \\
+D2S-VSE~\citep{liu2025aligning} & {\color{red}\XSolidBrush} & \underline{84.1} & \textbf{97.5} & \textbf{99.1} & \underline{70.3} & \underline{91.6} & \underline{95.3} & \underline{537.9} & 80.8 & \textbf{97.2} & \textbf{99.1} & \underline{69.0} & \underline{92.9} & 96.8 & \underline{535.8} & 60.6 & 86.5 & 93.2 & \underline{46.8} & \underline{76.4} & \underline{85.7} & \underline{449.1} \\
+\textbf{SEPS} & {\color{green}\Checkmark} & \textbf{90.7} & 94.4 & 98.4 & \textbf{89.3} & \textbf{99.3} & \textbf{99.5} & \textbf{571.5} & \textbf{90.9} & 96.1 & 98.8 & \textbf{91.0} & \textbf{99.5} & \textbf{99.8} & \textbf{576.1} & \textbf{77.8}& \textbf{88.7} &\textbf{94.8} &\textbf{78.5} & \textbf{96.3} & \textbf{98.7} &\textbf{534.6} \\
+\midrule
+\multicolumn{23}{l}{\textit{Swin-Base-224 + BERT-base, 7×7 patches}} \\
+VSE++~\citep{faghri2017vse++}& {\color{red}\XSolidBrush} & 82.5 & 96.5 & 98.9 & 70.0 & 91.4 & 95.1 & 534.4 & 83.3 & 97.5 & 99.3 & 71.0 & 93.0 & 96.7 & 540.9 & 64.0 & 88.2 & 94.2 & 49.9 & 78.0 & 86.6 & 460.9 \\
+SCAN~\citep{lee2018stacked}& {\color{green}\Checkmark} & 79.0 & 95.9 & 98.2 & 67.7 & 90.6 & 94.9 & 526.3 & 80.9 & 97.0 & \underline{99.1} & 69.7 & 93.1 & 97.1 & 536.9 & 60.7 & 86.6 & 93.2 & 48.1 & 77.1 & 86.1 & 451.8 \\
+SGR~\citep{diao2021similarity}& {\color{green}\Checkmark} & 80.4 & 97.0 & 98.7 & 66.9 & 90.2 & 94.5 & 527.6 & 81.2 & 97.1 & 99.1 & 69.9 & 93.2 & 97.2 & 537.7 & 61.0 & 86.7 & 93.2 & 48.6 & 77.2 & 86.3 & 453.1 \\
+CHAN~\citep{pan2023fine}& {\color{green}\Checkmark} & 81.4 & 97.0 & 98.6 & 68.5 & 90.6 & 94.5 & 530.6 & 81.6 & 97.2 & 99.3 & 70.6 & 93.7 & \underline{97.6} & 539.8 & 64.1 & 87.9 & 93.5 & 49.1 & 77.3 & 86.1 & 458.0 \\
+LAPS~\citep{fu2024linguistic} & {\color{green}\Checkmark} & 82.4 & \underline{97.4} & \underline{99.5} & 70.0 & 91.7 & 95.4 & 536.3 & 84.0 & \underline{97.6} & 99.3 & \underline{72.1} & 93.7 & 97.3 & 544.1 & 64.5 & \underline{89.2} & \underline{94.4} & 51.6 & 78.9 & 87.2 & 465.8 \\
+AVSE~\citep{liu2025asymmetric}& {\color{red}\XSolidBrush} & 83.9 & 97.4 & 99.4 & 70.0 & 92.4 & 95.6 & 538.7 & \underline{84.9} & \textbf{98.0} & 99.3 & 72.1 & \underline{94.0} & 97.4 & \underline{545.7} & \underline{66.2} & \textbf{89.8} & \textbf{94.7} & \underline{51.7} & \underline{79.2} & 87.3 & \underline{468.9} \\
+D2S-VSE~\citep{liu2025aligning} & {\color{red}\XSolidBrush} & \underline{87.2} & \textbf{98.4} & \textbf{99.9} & \underline{73.0} & \underline{93.5} & \underline{96.7} & \underline{548.7} & 82.4  & 97.6  & \textbf{99.3} & 70.3 & 93.7 & 97.4 & 540.7 & 63.9 & 87.7 & 94.0 & 49.3 & 78.3 & 87.2 & 460.4 \\
+\textbf{SEPS} & {\color{green}\Checkmark} & \textbf{89.8} & 96.9 & 98.7 & \textbf{88.0} & \textbf{98.9} & \textbf{99.6} & \textbf{572.0} & \textbf{87.2} & 94.9 & 98.3 & \textbf{84.7} & \textbf{99.0} & \textbf{99.8} & \textbf{563.9} & \textbf{71.9} & 86.0 & 92.4 & \textbf{66.8} & \textbf{92.2} & \textbf{96.8} &\textbf{506.1} \\
+\midrule
+\multicolumn{23}{l}{\textit{Swin-Base-384 + BERT-base, 12×12 patches}} \\
+VSE++~\citep{faghri2017vse++}& {\color{red}\XSolidBrush} & 83.8 & 97.5 & \underline{99.2} & 71.1 & 93.2 & 96.2 & 540.6 & 82.9 & 97.7 & \underline{99.4} & 71.3 & 93.5 & 97.3 & 542.1 & 63.0 & 88.5 & 94.3 & 50.1 & 78.9 & 87.4 & 462.2 \\
+SCAN~\citep{lee2018stacked}& {\color{green}\Checkmark} & 81.9 & 96.9 & 98.9 & 70.0 & 92.7 & 95.8 & 536.1 & 81.6 & 96.8 & 99.1 & 69.1 & 92.7 & 96.7 & 536.1 & 61.1 & 87.3 & 93.3 & 47.8 & 76.9 & 85.9 & 452.4 \\
+SGR~\citep{diao2021similarity}& {\color{green}\Checkmark} & 80.7 & 96.8 & 99.0 & 69.9 & 91.7 & 95.3 & 533.4 & 81.9 & 96.7 & 99.1 & 69.3 & 92.8 & 96.7 & 536.6 & 62.8 & 87.0 & 92.9 & 48.1 & 77.0 & 86.0 & 453.8 \\
+CHAN~\citep{pan2023fine}& {\color{green}\Checkmark} & 81.2 & 96.7 & 98.8 & 70.3 & 92.2 & 95.9 & 535.0 & 83.1 & 97.3 & 99.2 & 70.4 & 93.1 & 97.1 & 540.2 & 63.4 & 88.4 & 94.1 & 49.2 & 77.9 & 86.6 & 459.5 \\
+LAPS~\citep{fu2024linguistic} & {\color{green}\Checkmark} & 85.1 & 97.7 & 99.2 & 74.0 & 93.0 & 96.3 & 545.3 & 84.1 & 97.4 & 99.2 & \underline{72.1} & 93.9 & 97.4 & 544.1 & 67.1 & 88.6 & 94.3 & \underline{53.0} & 79.5 & 87.6 & 470.1 \\ 
+AVSE~\citep{liu2025asymmetric}& {\color{red}\XSolidBrush} & 87.1 & \underline{98.3} & 99.2 & 73.6 & 93.5 & 96.5 & 548.2 & \underline{85.1} & \textbf{98.2} & \textbf{99.5} & 71.6 & 94.0 & 97.5 & \underline{545.9} & \underline{68.6} & \textbf{90.2} & \textbf{95.6} & 52.2 & \underline{79.6} & 87.8 & \underline{474.0} \\
+D2S-VSE~\citep{liu2025aligning} & {\color{red}\XSolidBrush} & \underline{87.8} & \textbf{99.0} & \textbf{99.7} & \underline{75.7} & \underline{94.1} & \underline{96.9} & \underline{553.2} & 83.8 & \underline{97.9} & 99.4 & 71.9 & \underline{94.2} & \underline{97.9} & 544.7 & 65.2 & \underline{89.2} & \underline{94.6} & 51.3  & 79.4 & \underline{87.9} & 467.7 \\
+\textbf{SEPS} & {\color{green}\Checkmark} & \textbf{93.6} & 98.3 & 99.2 & \textbf{91.6} & \textbf{99.4} & \textbf{99.8} & \textbf{581.9} & \textbf{89.5} &96.5 &99.0 &\textbf{87.1} &\textbf{99.2} &\textbf{99.9} & \textbf{571.2} &\textbf{74.7} & 88.4 & 94.3 & \textbf{70.3} & \textbf{93.8} & \textbf{97.6} &\textbf{519.1} \\
+\hline
+\vspace{-0.5cm}
+\end{tabular}}
+\end{table}
+
+
+
+Following prior work, we adopt a bidirectional triplet loss with hard negative mining\citep{faghri2017vse++}:
+\begin{equation}
+\label{loss:align}
+\begin{aligned}
+        \mathcal{L}_{\text{align}} = &\sum_{(I,T)} (\left[ \alpha - S(I,T) + S(I, \hat{T}) \right]_+ \\
+    &+ \left[ \alpha - S(I,T) + S(\hat{I}, T) \right]_+)
+\end{aligned}
+\end{equation}
+
+
+
+where $\alpha$ is the margin, $[x]_+ = \max(x, 0)$, and $(I,T)$ denotes a positive image--text pair within the mini-batch. The hardest negatives are defined as $\hat{T} = \arg\max_{j \neq T} S(I,j)$ and $\hat{I} = \arg\max\_{i \neq I} S(i,T)$ for text and image, respectively.
+
+Furthermore, to enhance training stability, we constrain the proportion of selected patches to a target value $\rho$\citep{rao2021dynamicvit}, and supervise this constraint using mean-squared-error losses computed from the sparse-text and dense-text views, respectively. Finally, we combine the cross-modal alignment loss $\mathcal{L}_{\text{align}}$ Eq.\ref{loss:align} with the ratio constraint loss $\mathcal{L}_{\text{ratio}}$:
+\begin{equation}
+\begin{aligned}
+\mathcal{L}_{\text{ratio}} &= \left( \rho - \lambda_1 \cdot \frac{1}{N_s} \sum_{i=1}^{N_s} (D_s)_i - \lambda_2 \cdot \frac{1}{N_d} \sum_{i=1}^{N_d} (D_d)_i \right)^2, \\
+    \mathcal{L} &= \mathcal{L}_{\text{align}} + \mathcal{L}_{\text{ratio}}
+\end{aligned}
+\end{equation}
+where $\lambda_1$ and $\lambda_2$ are constant coefficients for sparse text and dense text.
+
+\section{Experiments}
+\label{sec:Experiments}
+
+% \begin{figure}
+%     \centering
+%     \includegraphics[width=\linewidth]{hyperprameters_1.pdf}
+%     \caption{The retrieval performance of different selection ratios $\rho$, constant coefficients $\lambda_1$ and $\lambda_2 $ with various visual encoders on Flick30K.}
+%     \label{fig:hyperprameters}
+% \end{figure}
+\begin{figure}[t]
+\centering
+    \subfigure{\includegraphics[width=0.33\textwidth]{r1_comparison.pdf}
+    \label{fig:sub1}}
+    \hfill
+    \subfigure{\includegraphics[width=0.33\textwidth]{rsum_metric.pdf}
+    \label{fig:sub2}}
+    \hfill
+    \subfigure{\includegraphics[width=0.3\textwidth]{line.pdf}
+    \label{fig:sub3}}
+    \caption{The retrieval performance of different selection ratios $\rho$, constant coefficients $\lambda_1$ and $\lambda_2$ with various visual encoders on Flickr30K.}
+    \vspace{-0.5cm}%%压缩图片后间隔
+\label{fig:hyperparameters}
+\end{figure}
+
+\subsection{Datasets}
+\label{sec:datasets}
+Following prior works~\citep{diao2021similarity,faghri2017vse++,lee2018stacked}, we evaluate our model on the widely-used Flickr30K~\citep{young2014image} and MS-COCO~\citep{lin2014microsoft} benchmarks. Each image in these datasets is paired with five textual captions. For Flickr30K, we adopt the standard split of 29,000 training, 1,000 validation, and 1,014 test images. For MS-COCO, we use the common split of 113,287 for training, 5,000 for validation, and 5,000 for testing. We report results on both the 1K test set (averaged over 5 folds) and the full 5K test set.
+\subsection{Metrics}
+\label{sec:metrics}
+We adopt Recall@K (R@K, $K\!\in\!\{1,5,10\}$) and rSum as evaluation metrics. R@K measures the percentage of ground truth in the retrieved top-K lists, while rSum aggregates multiple R@K in both directions (image-to-text and text-to-image) to summarize overall retrieval quality.
+
+\subsection{implementation Details}
+\label{sec:implementation-Details}
+%Our code is based on the public code of LAPS~\citep{fu2024linguistic}. We employ Qwen2.5-VL-7B-Instruct as the dense-text generator. Notably, we treat dense-text generation as an image preprocessing step, wherein each image undergoes independent preprocessing. Therefore, no information leakage occurs from the test datasets. 
+Our code is based on the public code of LAPS~\citep{fu2024linguistic}. For dense text generation, we use LLaVa~\citep{liu2023llava} to produce detailed textual descriptions. The generation process was configured with a Top-P of 0.9, a temperature of 0.2, and a limit of 500 new tokens. Notably, we treat dense-text generation as an image preprocessing step with no gradients backward. Therefore, no information leakage occurs from the test datasets. For vision encoder, we adopt base-size Vision Transformer (ViT) ~\citep{dosovitskiy2020image} (a patch is $16{\times}16$ pixels) and Swin Transformer (Swin) ~\citep{liu2021swin} (a patch is $32{\times}32$ pixels). Images are resized to \text{$224{\times}224$} or \text{$384{\times}384$}, yielding \text{$14{\times}14$ and $24{\times}24$} patch grids for ViT and \text{$7{\times}7$ and $12{\times}12$} for Swin. Text is encoded with base-size BERT~\citep{devlin2019bert}. The whole framework is trained for 30 epochs using AdamW~\citep{loshchilov2017decoupled} optimizer with a batch size of 32 and an initial learning rate of 1e-4. We use loss with margin $\alpha\!=\!\text{0.2}$ and set the constant coefficients $\lambda_1 = \lambda_2 = 1$. For sparsification, we adopt fixed ratios by default: on ViT, selection $\rho\!=\!\text{0.5}$; on Swin, selection $\rho\!=\!\text{0.8}$.
+
+\subsection{Comparison with State-of-the-art Methods}
+\label{sec:Comparison with State-of-the-art Methods}
+Following the standard protocols of two benchmarks~\citep{faghri2017vse++,zhang2022negative}, we systematically compare the retrieval performance of SEPS with recent state-of-the-art methods on Flickr30K and MS-COCO. Table~\ref{tab:comparison_results} details the feature encoders, input resolutions, and whether fine-grained alignment (FG) was adopted for each method. The performance of competing methods is reported directly from their original publications, supplementing with ensemble versions where necessary for comparison. Firstly, we introduce four SOTA cross-modal alignment methods:
+\begin{itemize}[leftmargin=*, labelsep=0.5em, itemsep=0.25em]
+  \item \textbf{CHAN~\citep{pan2023fine}:} Applies a hard-coded selection strategy atop the foundational fine-grained alignment SCAN~\citep{lee2018stacked}, retaining the maximum cross-attention alignment scores.
+    \item \textbf{LAPS~\citep{fu2024linguistic}:} A fine-grained approach that prunes redundant patches under language guidance, followed by semantic and spatial calibration to enable sparse, bidirectional patch–word alignment.
+  \item \textbf{AVSE~\citep{liu2025asymmetric}:} A coarse-grained approach that constructs multi-view global image embeddings via radial-biased sampling and performs Asymmetric Embedding Optimal Matching (AEOM) for global alignment.  \item \textbf{D2S-VSE~\citep{liu2025aligning}:} A coarse-grained approach that leverages dense-to-sparse distillation with dense captions generated by a multimodal large language model (MLLM) to align cross-modal information capacity, and conducts retrieval via global embedding similarity.
+\end{itemize}
+%The quantitative results in Table~\ref{tab:comparison_results} confirm that our SEPS framework sets a new state-of-the-art across all evaluated settings. On the Flickr30K benchmark, for example, SEPS demonstrates robust and consistent gains over prior methods. Under the Swin-Base-384 configuration, it surpasses the previous state-of-the-art, D2S-VSE, with a 21.0\% relative improvement in Text-to-Image R@1 and a 6.6\% improvement in Image-to-Text R@1. This leads to a 5.2\% increase in the overall rSum score, establishing its superior general performance. The core advantage of our framework, however, lies in its ability to dramatically improve text-image retrieval accuracy in large-scale, complex scenes. This superiority is most evident on the challenging MS-COCO 5K dataset. Here, using the ViT-Base-384 model, SEPS achieves a massive 52.8\% relative improvement in Text-to-Image R@1 and a significant 22.0\% improvement in Image-to-Text R@1, compared to the strongest competitor, D2S-VSE. These targeted accuracy gains drive a substantial 15.1\% increase in the overall rSum score. This demonstrates that by leveraging dense semantic guidance, SEPS effectively overcomes the information bottleneck of sparse captions, leading to more precise retrieval where visual complexity is high.
+%一段的版本：
+The quantitative results in Table~\ref{tab:comparison_results} confirm that our SEPS framework sets a new state-of-the-art across all evaluated settings. The core advantage of our framework lies in its ability to dramatically improve text-image retrieval accuracy in large-scale, complex scenes through enhancing textual modal semantic representations and reducing the semantic gap between image and text modalities. 
+Specifically, our approach strengthens the discriminative power of textual features while establishing more precise cross-modal correspondences, enabling better semantic alignment in heterogeneous visual-linguistic spaces.
+This superiority is most evident on the challenging MS-COCO 5K dataset, where SEPS, using the ViT-Base-224 model, achieves a substantial improvement of 13.8\% in Image-to-Text R@1 and a massive 27.2\% in Text-to-Image R@1 compared to the strongest competitor, D2S-VSE. These targeted accuracy gains contribute to an overall rSum improvement of 71.3\%. A consistent performance boost is also observed across all backbones on the Flickr30K dataset, demonstrating the robustness of our approach.
+
+%两段的版本
+
+
+% The quantitative results in Table~\ref{tab:comparison_results} confirm that our SEPS framework sets a new state-of-the-art across all evaluated settings. On the Flickr30K benchmark, for example, SEPS demonstrates robust and consistent gains over prior methods. Highlighting the best-performing configuration, SEPS with a ViT-Base-384 backbone achieves a remarkable 19.0\% improvement in Text-to-Image R@1 and a 6.6\% improvement in Image-to-Text R@1 over D2S-VSE. A consistent performance boost is also observed across the other evaluated backbones.
+
+
+% The core advantage of our framework, however, lies in its ability to dramatically improve text-image retrieval accuracy in large-scale, complex scenes. This superiority is most evident on the challenging MS-COCO 5K dataset. Here, using the ViT-Base-224 model, SEPS achieves a substantial improvement of 13.8\% in Image-to-Text R@1 and a massive 27.2\% in Text-to-Image R@1 compared to the strongest competitor, D2S-VSE. These targeted accuracy gains, which contribute to an overall rSum improvement of 71.3\%, demonstrate that by leveraging dense semantic guidance, SEPS effectively overcomes the information bottleneck of sparse captions, leading to more precise retrieval where visual complexity is high.
+%下面是第二个表
+
+
+Furthermore, to demonstrate the generalizability and robustness of our proposed framework, we extend the SEPS methodology to the widely-adopted pre-trained CLIP model~\citep{radford2021learning}, with comprehensive experimental results presented in Appendix Table~\ref{tab:vlp_retrieval_table2}. Additionally, we conduct systematic hyperparameter analysis by visualizing the influence of different hyperparameter configurations on SEPS performance in Figure~\ref{fig:hyperparameters}, with corresponding quantitative results detailed in Appendix Table~\ref{tab:selection ratio} and Table~\ref{tab:coefficients}. All experimental configurations adhere to the default parameter settings specified in Section~\ref{sec:implementation-Details}.
+
+\subsection{Ablation Study}
+\label{sec:Ablation Study}
+% To systematically dissect and validate the contributions of our key components, we conduct extensive ablation studies based on two modules and single 改进/创新点 on the Flickr30K~\citep{young2014image} dataset. As presented in Table~\ref{tab:ablation study}, our analysis quantifies the performance impact of each proposed mechanism. 
+
+To systematically evaluate the individual contributions of our key components and assess the parameter sensitivity of our proposed algorithm, we conduct comprehensive ablation studies on the Flickr30K dataset. These experiments examine two core architectural modules and critical hyperparameters, with detailed results presented in Table~\ref{tab:ablation study} and Figure \ref{fig:hyperparameters}.
+% , our analysis quantifies the individual performance impact of each proposed mechanism and introduced parameters, providing empirical evidence for their effectiveness in cross-modal retrieval tasks.
+\begin{table}[htbp]
+    \centering
+    \vspace{-0.5cm}
+    \caption{Comparison of different module ablations for SEPS framework on Flickr30K. We also show the results of the enhanced textual feature and relevance-aware alignment for our framework}
+    \label{tab:ablation study}
+    \begin{tabular}{c|c|c c c c}
+    \toprule
+    \multirow{2}{*}{Modules}  &\multirow{2}{*}{Different Settings} &\multicolumn{2}{c}{Image-to-Text} &\multicolumn{2}{c}{Text-to-Image} \\
+                 &           &R@1 &R@5 &R@1 &R@5 \\
+    \midrule
+    \multirow{3}{*}{SDTPS}  & only sparse text & 78.6 & 95.1 & 67.2 & 90.5 \\
+                            & only dense text  & 80.3 & 80.3 & 80.5 & 96.8 \\
+                            & without aggregation & 85.2 & 96.1 & 84.7 & 97.3 \\
+    \midrule
+    \multirow{2}{*}{HRPA} & only relevance-aware selection & 83.3 & 93.8 & 82.6 & 93.9 \\
+                        & only mean value & 84.5 & 94.7 & 80.1 & 93.5 \\
+    \midrule
+    \multirow{4}{*}{\quad}    & introduce dense-text  & 84.8 & 95.7 & 84.0 & 96.9 \\
+                        & introduce aggregation  & 74.4 & 94.3 & 62.7 & 88.3 \\
+                        & introduce relevance-aware selection & 74.7 & 94.8 & 62.6 & 88.8 \\ 
+                        & complete \textbf{SEPS}  & \textbf{86.1} & \textbf{96.7} & \textbf{86.9} & \textbf{98.1} \\
+    \bottomrule
+    \end{tabular}
+    \vspace{-0.5cm}
+\end{table}
+
+% \textbf{Effectiveness of the SDTPS Module.} Our proposed SDTPS module is central to identifying and refining text-relevant visual patches. As the following analyses show, both of its key mechanisms—dense-text guidance and patch aggregation—provide significant and distinct contributions to the model's overall performance.
+\textbf{Impact of selection ratios and constant coefficients.} As demonstrated in Figure \ref{fig:hyperparameters}, while our framework exhibits robustness in different parameter settings, unbalanced coefficient combinations and excessive or insufficient patch selection slightly affect performance, particularly for ViT-based models.
+
+% \textbf{Effectiveness of unified semantic from dense and sparse texts.} As detailed in Table~\ref{tab:ablation study}, the results decisively confirm our central hypothesis that dense text provides superior guidance for patch selection. Moving from a sparse-text-only baseline to our hybrid guidance framework catapults the Text-to-Image R@1 performance by a remarkable 13.3\%. This substantial gain highlights a key finding: the semantic richness provided by MLLMs is not only beneficial but also critical for resolving ambiguity in complex visual scenes. Furthermore, even when used alone, dense-text guidance significantly outperforms the sparse-text baseline, validating the fundamental motivation behind our work.
+
+\textbf{Effectiveness of unified semantic from dense and sparse texts.} As detailed in Table~\ref{tab:ablation study}, the results decisively validate our central hypothesis regarding the effectiveness of unifying semantic information from both dense and sparse textual modalities. The integration of dense text with sparse text representations in our hybrid framework achieves a remarkable 17.5\% improvement in Text-to-Image R@1 performance compared to sparse-text-only baselines. This substantial enhancement demonstrates that the unified semantic understanding is critical for resolving ambiguity in complex visual scenes, thereby validating the fundamental innovation of our framework.
+
+\textbf{Effectiveness of aggregation.} The results show that the inclusion of the aggregation network provides a performance gain of 2.2\% in Text-to-Image R@1. This confirms that the aggregation mechanism contributes to the creation of more robust and semantically coherent representations for the final alignment stage.
+
+\textbf{Effectiveness of relevance-aware selection.} A mechanism relying solely on relevance-aware selection reaches at 82.6\% in Text-to-Image R@1. However, the complete model reaches a superior 86.9\%, confirming our design choice. This performance gain is achieved because mean pooling captures the overall semantic similarity, while relevance-aware selection explicitly rewards the most critical patch-word correspondences, proving that the two strategies are highly complementary.
+
+% \subsection{visualization}
+
+
+\section{Conclusion}
+% In this paper, we introduced the Semantic-Enhanced Patch Slimming (SEPS) framework, a novel approach to fine-grained cross-modal alignment that addresses fundamental challenges of patch redundancy and ambiguity through strategic MLLM integration.
+% The framework introduces the SDTPS module to solve the semantic conflicts between origin sparse texts and generated dense texts, then propose the HRPA module to solve the 相似度计算中由irrelevant patchs的极小值带来的平均值偏移问题, which together enable more precise identification of semantically relevant patches and improved patch-word correspondences. 
+% Comprehensive experimental validation on Flickr30K and MS-COCO datasets demonstrates that SEPS establishes new state-of-the-art results across multiple model architectures, achieving remarkable improvements of up to 23\%-86\% in rSum.
+
+In this work, we present the Semantic-Enhanced Patch Slimming (SEPS) framework, a novel approach for fine-grained cross-modal alignment that systematically addresses the fundamental challenges of patch redundancy and semantic ambiguity through strategic integration of MLLMs. The proposed framework introduces two key innovations: the SDTPS module, which resolves semantic conflicts between original sparse textual descriptions and generated dense semantic representations, and the HRPA module, which mitigates the averaging bias introduced by minimal similarity values from irrelevant patches. These complementary modules enable the precise identification of semantically relevant image patches and establish improved patch-word correspondences. Comprehensive experimental evaluation on standard benchmarks, including Flickr30K and MS-COCO datasets, demonstrates that SEPS achieves new state-of-the-art performance across multiple model architectures, yielding substantial improvements of 23\%-86\% in rSum metrics and establishing its effectiveness for cross-modal retrieval tasks.
+
+
+% \section{Preparing PostScript or PDF files}
+
+% Please prepare PostScript or PDF files with paper size ``US Letter'', and
+% not, for example, ``A4''. The -t
+% letter option on dvips will produce US Letter files.
+
+% Consider directly generating PDF files using \verb+pdflatex+
+% (especially if you are a MiKTeX user).
+% PDF figures must be substituted for EPS figures, however.
+
+% Otherwise, please generate your PostScript and PDF files with the following commands:
+% \begin{verbatim}
+% dvips mypaper.dvi -t letter -Ppdf -G0 -o mypaper.ps
+% ps2pdf mypaper.ps mypaper.pdf
+% \end{verbatim}
+
+% \subsection{Margins in LaTeX}
+
+% Most of the margin problems come from figures positioned by hand using
+% \verb+\special+ or other commands. We suggest using the command
+% \verb+\includegraphics+
+% from the graphicx package. Always specify the figure width as a multiple of
+% the line width as in the example below using .eps graphics
+% \begin{verbatim}
+%    \usepackage[dvips]{graphicx} ...
+%    \includegraphics[width=0.8\linewidth]{myfile.eps}
+% \end{verbatim}
+% or % Apr 2009 addition
+% \begin{verbatim}
+%    \usepackage[pdftex]{graphicx} ...
+%    \includegraphics[width=0.8\linewidth]{myfile.pdf}
+% \end{verbatim}
+% for .pdf graphics.
+% See section~4.4 in the graphics bundle documentation (\url{http://www.ctan.org/tex-archive/macros/latex/required/graphics/grfguide.ps})
+
+% A number of width problems arise when LaTeX cannot properly hyphenate a
+% line. Please give LaTeX hyphenation hints using the \verb+\-+ command.
+
+% \subsubsection*{Author Contributions}
+% If you'd like to, you may include  a section for author contributions as is done
+% in many journals. This is optional and at the discretion of the authors.
+\section*{Ethics statement}
+In this paper, we use Large Language Models to polish writing in Section~\ref{sec:Experiments} and appendix. The dense text used for supervision in our framework is generated by a large pre-trained MLLM. We acknowledge that these models may learn and perpetuate societal biases (e.g. gender and racial stereotypes) from their training data. Consequently, our method risks reinforcing these biases by relying on such models for visual guidance. We recognize this as a significant limitation and a key issue for future research to address.
+
+\section*{Reproducibility statement}
+To improve the reproducibility of our work, we upload our code, including all train logs, evaluate logs and best model checkpoints at https://anonymous.4open.science/r/SEPS/. The detailed settings for the hyperparameters are introduced in Section~\ref{sec:implementation-Details}.
+
+% \subsubsection*{Acknowledgments}
+% Use unnumbered third level headings for the acknowledgments. All
+% acknowledgments, including those to funding agencies, go at the end of the paper.
+
+\bibliographystyle{iclr2026_conference}
+\bibliography{iclr2026_conference}
+
+
+\appendix
+\clearpage % This starts the appendix on a new page
+
+% --- APPENDIX TITLE AND CONTENTS PAGE ---
+\begin{center}
+    \bfseries Appendix to ``SEPS: Semantic-enhanced Patch Slimming Framework for fine-grained cross-modal alignment''
+\end{center}
+
+\vspace{2em} % Adds some vertical space after the title
+
+In this appendix, we provide the following materials:
+\begin{enumerate}[leftmargin=*]
+    \item[\hyperlink{vlp}{A}] Comparison of VLP models on Flickr30K and MS-COCO (referring to Section~\ref{sec:Comparison with State-of-the-art Methods} in the main paper);
+    \item[\hyperlink{hyperparameter}{B}] Comparison of image-text retrieval performance for SEPS with different hyperparameters on Flickr30K (referring to Section~\ref{sec:Comparison with State-of-the-art Methods} and Section~\ref{sec:Ablation Study} in the main paper);
+    \item[\hyperlink{Visualization}{C}] Visualization of patch selection and alignment results.
+\end{enumerate}
+\hypertarget{vlp}{\section{Comparison of VLP models on Flickr30K and MS-COCO}}
+\label{vlp}
+
+To further validate the generalizability of our framework, we adapt SEPS to the widely-used CLIP pre-trained model, comparing it in Table \ref{tab:vlp_retrieval_table2} against both mainstream VLP models and prior fine-grained methods on the same backbone. While prior fine-grained methods like LAPS~\citep{fu2024linguistic} demonstrate strong performance on the CLIP backbone, they do not consistently close the performance gap to leading VLP models such as BLIP~\citep{li2022blip}, particularly on the more challenging MS-COCO benchmark. In stark contrast, SEPS not only significantly surpasses all prior fine-grained methods but also successfully bridges this performance gap. Notably, in the text-to-image retrieval task on MS-COCO under the CLIP-Large backbone, SEPS achieves an R@1 score of 79.3\%, which not only far surpasses the 57.1\% from LAPS but also substantially outperforms the powerful BLIP model's 63.1\%. This result provides compelling evidence that our sophisticated dual-guidance mechanism is particularly effective in handling complex visual scenarios, establishing the competitive strength of SEPS even against large-scale, end-to-end pre-trained models.
+\begin{table*}[htbp]
+\centering
+\setlength{\tabcolsep}{3pt}
+\caption{The comparisons of image-text retrieval for Vision-Language Pre-training (VLP) Models. \textit{FG} indicates whether the method fine-grained alignment.}
+\label{tab:vlp_retrieval_table2}
+\begin{tabular}{l|c|cccc|cccc}
+\toprule
+\multirow{3}{*}{Method} & \multirow{3}{*}{\textit{FG}} &
+\multicolumn{4}{c}{Flickr30K 1K} &
+\multicolumn{4}{c}{MS-COCO 5K} \\
+% \cmidrule(lr){3-6}\cmidrule(lr){7-10}
+ &  & \multicolumn{2}{c}{Image-to-Text} & \multicolumn{2}{c}{Text-to-Image} & \multicolumn{2}{c}{Image-to-Text} & \multicolumn{2}{c}{Text-to-Image} \\
+% \cmidrule(lr){3-4}\cmidrule(lr){5-6}\cmidrule(lr){7-8}\cmidrule(lr){9-10}
+ &  & R@1 & R@5 & R@1 & R@5 & R@1 & R@5 & R@1 & R@5 \\
+\midrule
+UNITER~\citep{chen2019uniter}& {\color{green}\Checkmark} & 87.3 & 98.0 & 75.6 & 94.1 & 65.7 & 88.6 & 52.9 & 79.9 \\
+VILT~\citep{kim2021vilt}  & {\color{green}\Checkmark} & 83.5 & 96.7 & 64.4 & 88.7 & 61.5 & 86.3 & 42.7 & 72.9 \\
+SOHO~\citep{huang2021seeing}& {\color{green}\Checkmark} & 86.5 & 98.1 & 72.5 & 92.7 & 66.4 & 88.2 & 50.6 & 78.0 \\
+ALBEF~\citep{li2021align}& {\color{green}\Checkmark} & \underline{95.9} & \textbf{99.8} & \underline{85.6} & \textbf{97.5} & \underline{77.6} & \underline{94.3} & \underline{60.7} & \underline{84.3} \\
+BLIP~\citep{li2022blip}& {\color{green}\Checkmark} & \textbf{96.6} & \textbf{99.8} & \textbf{87.2} & \textbf{97.5} & \textbf{80.6} & \textbf{95.2} & \textbf{63.1} & \textbf{85.3} \\
+\midrule
+\multicolumn{10}{l}{\textit{CLIP-ViT-Base-224 + CLIP-BERT-Base, $14\!\times\!14$ patches}}\\
+CLIP ~\citep{radford2021learning}& {\color{red}\XSolidBrush} & 81.4 & 96.2 & 61.1 & 85.4 & 52.3 & 76.2 & 33.3 & 58.2 \\
+VSE++~\citep{faghri2017vse++} & {\color{red}\XSolidBrush} & 92.2 & \underline{99.1} & 80.5 & \underline{95.6} & 68.0 & 88.2 & 53.6 & 79.7 \\
+SCAN~\citep{lee2018stacked}& {\color{green}\Checkmark} & 88.2 & 98.1 & 75.3 & 93.1 & 65.4 & 88.0 & 50.7 & 77.6 \\
+LAPS~\citep{fu2024linguistic} & {\color{green}\Checkmark} & \underline{92.9} & \textbf{99.3} & \underline{80.6} & 95.5 & \underline{69.8} & \underline{90.4} & \underline{54.3} & \underline{80.0} \\
+\textbf{SEPS} & {\color{green}\Checkmark} & \textbf{94.7}  & 97.6 &\textbf{93.1} & \textbf{97.7} & \textbf{84.1}& \textbf{91.2} & \textbf{78.4} & \textbf{95.5}\\
+\midrule
+\multicolumn{10}{l}{\textit{CLIP-ViT-Large-224 + CLIP-BERT-Large, $16\!\times\!16$ patches}}\\
+CLIP ~\citep{radford2021learning} & {\color{red}\XSolidBrush} & 85.0 & 97.7 & 61.3 & 87.0 & 55.9 & 79.1 & 35.9 & 60.9 \\
+VSE++~\citep{faghri2017vse++} & {\color{red}\XSolidBrush} & 94.0 & \underline{99.5} & 83.4 & 96.4 & 68.5 & 89.4 & 56.7 & 81.9 \\
+SCAN~\citep{lee2018stacked}  & {\color{green}\Checkmark} & 90.0 & 98.5 & 82.0 & 95.9 & 68.0 & 90.4 & 53.2 & 80.7 \\
+LAPS~\citep{fu2024linguistic} & {\color{green}\Checkmark} & \underline{94.6} & \textbf{99.9} & \underline{84.9} & \underline{97.3} & \underline{72.9} & \textbf{91.7} & \underline{57.1} & \underline{81.3} \\
+\textbf{SEPS} & {\color{green}\Checkmark} & \textbf{95.8} & 98.4 & \textbf{95.1} & \textbf{98.1} & \textbf{86.5} & \textbf{91.7} & \textbf{79.3} & \textbf{95.8} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+
+\hypertarget{hyperparameter}{\section{Comparison of image-text retrieval performance for SEPS with different hyperparameters on Flickr30K.}}
+\label{hyperparameter}
+
+\begin{table*}[htbp]
+    \centering
+    \caption{The comparisons of image-text retrieval for SEPS-Vit and SEPS-Swin with different selection ratio $\rho$ on Flicker30K.}
+    \setlength{\tabcolsep}{12pt}
+    \begin{tabular}{c|ccccccc}
+    \toprule
+\multirow{2}{*}{$\rho$} & \multicolumn{3}{c}{Image-to-Text} & \multicolumn{3}{c}{Text-to-Image} & \multirow{2}{*}{rSum}\\
+ & R@1 & R@5 & R@10 & R@1 & R@5 & R@10 & \\
+ \midrule
+    \multicolumn{8}{l}{\textit{Vit-Base-224 + BERT-base, 14×14 patches}} \\
+     0.1  & 85.6  & 91.9 & 97.0  & 85.1 & 97.0 & 98.6 & 553.4\\
+     0.2  & 86.5  & 92.4 & 96.6  & 86.3 & 97.5 & 98.9 & 557.3\\
+     0.3  & 87.4  & 92.9 & 96.2  & \textbf{87.5} & 98.0 & 99.2 & 561.2\\
+     0.4  & 87.0  & 94.2 & 97.0  & 87.1 & 98.3 & 99.3 & 562.8\\
+     0.5  & 86.5  & \textbf{95.4} & \textbf{97.8}  & 86.6 & \textbf{98.6} & \textbf{99.4} & \textbf{564.3}\\
+     0.6  & 87.0  & 94.1 & 97.3  & 86.9 & 98.3 & 99.2 & 562.8\\
+     0.7  & \textbf{87.5}  & 92.8 & 96.8  & 87.3 & 97.9 & 99.0 & 561.3\\
+     0.8  & 86.9  & 92.6 & 96.4  & 86.8 & 97.9 & 99.1 & 559.8\\
+     0.9  & 86.2  & 92.5 & 96.1  & 86.3 & 97.8 & 99.2 & 558.2\\
+     \multicolumn{8}{l}{\textit{Vit-Base-384 + BERT-base, 24×24 patches}} \\
+     0.1  & 89.8  & 90.9 & 97.6  & 87.8 & 97.7 & 98.7 & 560.5\\
+     0.2  & 90.7  & 91.4 & 97.2  & 89.0 & 98.2 & 99.0 & 564.4\\
+     0.3  & 91.6  & 91.9 & 96.8  & \textbf{90.2} & 98.7 & 99.3 & 568.4\\
+     0.4  & 91.2  & 93.2 & 97.6  & 89.8 & 99.0 & 99.4 & 569.9\\
+     0.5  & 90.7  & \textbf{94.4} & \textbf{98.4}  & 89.3 & \textbf{99.3} & \textbf{99.5} & \textbf{571.5}\\
+     0.6  & 91.2  & 93.1 & 97.9  & 89.7 & 98.9 & 99.3 & 570.0\\
+     0.7  & \textbf{91.7}  & 91.8 & 97.4  & 90.0 & 98.6 & 99.1 & 568.5\\
+     0.8  & 91.1  & 91.7 & 97.0  & 89.5 & 98.5 & 99.2 & 566.9\\
+     0.9  & 90.4  & 91.5 & 96.7  & 89.0 & 98.5 & 99.3 & 565.3\\
+     \multicolumn{8}{l}{\textit{Swin-Base-224 + BERT-base, 7×7 patches}} \\
+     0.1  & 89.8  & 96.8 & 98.6  & 86.8 & 98.7 & 99.5 & 569.2\\
+     0.2  & 90.2  & \textbf{97.2} & 98.7  & 87.3 & 98.8 & 99.6 & 571.8\\
+     0.3  & 90.4  & 96.6 & 98.6  & 87.0 & 98.8 & 99.5 & 570.8\\
+     0.4  & 90.5  & 96.4 & 98.5  & 86.9 & 98.8 & 99.5 & 570.6\\
+     0.5  & 90.7  & 96.8 & 98.7  & 87.8 & 98.9 & 99.6 & 572.4\\
+     0.6  & \textbf{90.8}  & 97.1 & \textbf{98.8}  & \textbf{88.5} & \textbf{98.9} & \textbf{99.7} & \textbf{573.8}\\
+     0.7  & 90.2  & 97.0 & 98.7  & 88.2 & \textbf{98.9} & 99.6 & 572.6\\
+     0.8  & 89.8  & 96.9 & 98.7  & 88.0 & 98.9 & 99.6 & 572.0\\
+     0.9  & 89.5  & 96.5 & 98.6  & 87.5 & 98.8 & 99.5 & 570.9\\
+
+    \multicolumn{8}{l}{\textit{Swin-Base-384 + BERT-base, 12×12 patches}} \\
+    0.1  & 92.6  & 98.0 & 99.0  & 90.2 & 99.2 & 99.7 & 578.5\\
+    0.2  & 93.1  & \textbf{98.4} & 99.1  & 90.8 & 99.3 & 99.8 & 581.2\\
+    0.3  & 93.3  & 97.8 & 99.0  & 90.5 & 99.3 & 99.7 & 580.1\\
+    0.4  & 93.4  & 97.6 & 98.9  & 90.4 & 99.3 & 99.7 & 579.9\\
+    0.5  & 93.6  & 98.0 & 99.1  & 91.4 & 99.4 & 99.8 & 581.8\\
+    0.6  & \textbf{93.7}  & 98.3 & \textbf{99.2}  & \textbf{92.1} & \textbf{99.4} & \textbf{99.9} & \textbf{583.2}\\
+    0.7  & 93.1  & 98.2 & 99.1  & 91.8 & \textbf{99.4} & 99.8 & 582.0\\
+    0.8  & 93.6  & 98.3 & \textbf{99.2}  & 91.6 & 99.4 & 99.8 & 581.9\\
+    0.9  & 92.4  & 97.7 & 99.0  & 91.1 & 99.3 & 99.7 & 580.3\\
+\midrule
+    \end{tabular}
+    \vspace{-0.5cm}
+    \label{tab:selection ratio}
+\end{table*}
+
+\begin{table}[htbp]
+    \centering
+    \caption{The comparisons of image-text retrieval for SEPS with different settings of coefficients on Flicker30K. The best results are marked \textbf{bold}.}
+    \begin{tabular}{cc|ccccccc}
+    \toprule
+         \multirow{3}{*}{$\lambda_1$} & \multirow{3}{*}{$\lambda_2$} & \multicolumn{7}{c}{Flickr30K 1K} \\
+ & & \multicolumn{3}{c}{Image-to-Text} & \multicolumn{3}{c}{Text-to-Image} & \multirow{2}{*}{rSum}\\
+ & & R@1 & R@5 & R@10 & R@1 & R@5 & R@10 & \\
+ \midrule
+     0.25 & 0.25 & 85.8 & 94.3 & 97.8 & 83.1 & 97.6 & 98.7 & 557.4 \\
+     0.25 & 0.5 & 85.0 & 92.9 & 96.6 & 85.0 & 97.5 & 98.7 & 555.7 \\
+     0.25 & 0.75 & 84.7 & 92.4 & 96.2 & 85.6 & 97.7 & 98.9 & 555.5 \\
+     0.25 & 1 & 84.8 & 86.9 & 94.0 & 83.2 & 97.0 & 98.7 & 544.6 \\
+     0.5 & 0.25 & \textbf{86.8} & 96.7 & 97.9 & 85.5 & 97.9 & 99.1 & 563.9 \\
+     0.5 & 0.5  & 86.5  & 95.4 & 97.8  & 86.6 & \textbf{98.6} & \textbf{99.4} & \textbf{564.3}\\
+     0.5 & 0.75 & 85.6 & 91.2 & 95.7 & 86.1 & 97.7 & 99.0 & 555.3 \\
+     0.5 & 1     & 86.6 & 92.5 & 96.9 & 86.3 & 98.3 & 99.3  & 559.9\\
+     1 & 0.25 & 85.3 & \textbf{96.9} & \textbf{98.9} & 69.7 & 93.0 & 97.0 & 540.9 \\
+     1 & 0.5     & 86.4 & 94.7 & 98.1  & 86.7 & 98.3 & \textbf{99.4} & 563.7\\
+     1 & 0.75 & 86.0 & 94.5 & 97.1 & \textbf{87.3} & 98.2 & 99.3& 562.4 \\
+     1 & 1   & 86.1 & 93.7 & 96.9 & 86.9 & 98.1 & 99.2  & 560.9 \\
+\midrule
+    \end{tabular}
+    \label{tab:coefficients}
+\end{table}
+
+To comprehensively evaluate our model's sensitivity and generality with respect to the key hyperparameter $ \rho $, we conducted exhaustive experiments on both ViT and Swin backbones. The detailed results are presented in Table~\ref{tab:selection ratio} and visually summarized in Figure~\ref{fig:hyperparameters}. The analysis reveals both consistencies and notable distinctions in the performance trends across the two architectures. The ViT architecture exhibits a performance curve that is relatively sensitive to the value of $ \rho $, where the rSum score reaches a distinct peak around $ \rho=0.5 $ before declining at a comparatively rapid rate. In contrast, the Swin architecture demonstrates significant robustness; its performance curve maintains a near-peak level across a broad range of $ \rho $ from 0.2 to 0.8, without showing sharp degradation. This comparative analysis shows that while moderate information slimming is beneficial for both backbones, our method possesses a very high tolerance for the choice of $ \rho $ on the Swin architecture. Overall, this provides compelling evidence for the universality and high stability of our proposed method, highlighting its ability to readily adapt to different mainstream visual backbones without requiring meticulous hyperparameter tuning.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=\linewidth]{visualization1.pdf}
+    \caption{The visualization of visual patch selection with different combinations of sparse text and dense text.}
+    \vspace{-0.5cm}
+    \label{fig:selection}
+\end{figure}
+% We conducted a sensitivity analysis on the loss coefficients $ \lambda_1 $ (sparse text) and $ \lambda_2 $ (dense text) to evaluate the stability of our model's performance. As presented in Table~\ref{tab:coefficients}, the SEPS framework demonstrates remarkable robustness to the weighting of these coefficients. For instance, when adjusting the ($ \lambda_1, \lambda_2 $) combination from (1, 1) to (0.25, 0.25), the overall performance metric, rSum, remained remarkably stable, fluctuating only from 563.7 to 540.9, which constitutes an absolute difference of just 3.8 percentage points in average. More importantly, the different settings revealed nuanced trade-offs on key metrics. Specifically, the ($ \lambda_1=1, \lambda_2=0.75 $) configuration achieved the highest R@1 of 87.3\% on the most challenging text-to-image retrieval task, while the ($ \lambda_1=0.5, \lambda_2=0.5 $) setting showed a slight advantage in image-to-text retrieval. This minimal performance trade-off, coupled with high overall stability, provides compelling evidence that our model's exceptional performance is not an artifact of meticulous hyperparameter tuning but stems directly from the efficacy of its core architectural principle of using semantic guidance from dense text.
+We conducted a comprehensive sensitivity analysis on the loss coefficients $\lambda_1$ (sparse text) and $\lambda_2$ (dense text) to assess the robustness of our proposed SEPS framework. As demonstrated in Table~\ref{tab:coefficients}, our model exhibits considerable stability across various coefficient combinations on the Flickr30K dataset. The overall performance metric rSum ranges from 540.9 to 564.3, representing a variation of approximately 4.2\% relative to the optimal configuration, which underscores the model's inherent robustness to hyperparameter selection. Notably, the optimal configuration ($\lambda_1=0.5$, $\lambda_2=0.5$) achieved the highest rSum of 564.3, demonstrating balanced performance across both retrieval directions. This configuration also yielded superior results in text-to-image retrieval, attaining R@5 and R@10 scores of 98.6\% and 99.4\%, respectively. Conversely, for image-to-text retrieval, the setting ($\lambda_1=0.5$, $\lambda_2=0.25$) achieved the highest R@1 performance of 86.8\%, while the ($\lambda_1=1$, $\lambda_2=0.25$) configuration excelled in R@5 and R@10 metrics with scores of 96.9\% and 98.9\%, respectively. In the challenging text-to-image R@1 task, the ($\lambda_1=1$, $\lambda_2=0.75$) configuration delivered the peak performance of 87.3\%.
+These results reveal that while individual metrics may favor specific coefficient combinations, the overall model maintains consistently high performance across the parameter space. This stability pattern strongly indicates that the superior performance of SEPS stems from its fundamental architectural design principles rather than from aggressive hyperparameter optimization, thus validating the effectiveness of our semantic guidance mechanism utilizing dense textual representations.
+%\begin{table}[htbp]
+%     \centering
+%     \caption{The comparisons of image-text retireval for SEPS-Swin with different selection ratio $\rho$ on Flicker30K.}
+%     \begin{tabular}{c|ccccccc}
+%     \toprule
+% \multirow{2}{*}{$\rho$} & \multicolumn{3}{c}{Image-to-Text} & \multicolumn{3}{c}{Text-to-Image} & \multirow{2}{*}{rSum}\\
+%  & R@1 & R@5 & R@10 & R@1 & R@5 & R@10 & \\
+%  \midrule
+%      \multicolumn{8}{l}{\textit{Swin-Base-224 + BERT-base, 7×7 patches}} \\
+%      0.1  & 89.8  & 96.8 & 98.6  & 86.8 & 98.7 & 99.5 & 569.2\\
+%      0.2  & 90.2  & 97.2 & 98.7  & 87.3 & 98.8 & 99.6 & 571.8\\
+%      0.3  & 90.4  & 96.6 & 98.6  & 87.0 & 98.8 & 99.5 & 570.8\\
+%      0.4  & 90.5  & 96.4 & 98.5  & 86.9 & 98.8 & 99.5 & 570.6\\
+%      0.5  & 90.7  & 96.8 & 98.7  & 87.8 & 98.9 & 99.6 & 572.4\\
+%      0.6  & 90.8  & 97.1 & 98.8  & 88.5 & 98.9 & 99.7 & 573.8\\
+%      0.7  & 90.2  & 97.0 & 98.7  & 88.2 & 98.9 & 99.6 & 572.6\\
+%      0.8  & 89.8  & 96.9 & 98.7  & 88.0 & 98.9 & 99.6 & 572.0\\
+%      0.9  & 89.5  & 96.5 & 98.6  & 87.5 & 98.8 & 99.5 & 570.9\\
+
+%      \multicolumn{8}{l}{\textit{Swin-Base-384 + BERT-base, 12×12 patches}} \\
+%     0.1  & 92.6  & 98.0 & 99.0  & 90.2 & 99.2 & 99.7 & 578.5\\
+%     0.2  & 93.1  & 98.4 & 99.1  & 90.8 & 99.3 & 99.8 & 581.2\\
+%     0.3  & 93.3  & 97.8 & 99.0  & 90.5 & 99.3 & 99.7 & 580.1\\
+%     0.4  & 93.4  & 97.6 & 98.9  & 90.4 & 99.3 & 99.7 & 579.9\\
+%     0.5  & 93.6  & 98.0 & 99.1  & 91.4 & 99.4 & 99.8 & 581.8\\
+%     0.6  & 93.7  & 98.3 & 99.2  & 92.1 & 99.4 & 99.9 & 583.2\\
+%     0.7  & 93.1  & 98.2 & 99.1  & 91.8 & 99.4 & 99.8 & 582.0\\
+%     0.8  & 93.6  & 98.3 & 99.2  & 91.6 & 99.4 & 99.8 & 581.9\\
+%     0.9  & 92.4  & 97.7 & 99.0  & 91.1 & 99.3 & 99.7 & 580.3\\
+
+% \midrule
+%     \end{tabular}
+%     \label{tab:placeholder}
+% \end{table}
+
+
+
+
+
+\hypertarget{Visualization}{\section{Visualization}}
+\label{Visualization}
+
+To intuitively illustrate the internal mechanism and final efficacy of our SEPS framework, we provide a qualitative visual analysis. Figure~\ref{fig:selection} clearly reveals the visual patch selection process. When guided solely by sparse text, the model identifies primary objects, but the selection can be coarse. Conversely, dense text alone can add detail but may sometimes overemphasize secondary regions. In contrast, our SEPS framework achieves a more precise selection of visual evidence by being the first to combine MLLM-generated dense text with original sparse captions. This combination allows the model to effectively bridge the information density gap between modalities, fusing the global context from sparse captions with the granular detail from dense descriptions to accurately preserve all semantically relevant patches. This superior patch selection capability translates directly into more robust fine-grained alignment, as demonstrated in Figure~\ref{fig:alignment}. Our model successfully aligns a single complex image with multiple, semantically diverse, yet correct captions, such as understanding both "Baseball players are playing" and "A crowd cheers on a baseball team." In summary, these visualizations intuitively demonstrate our core insight. By systematically leveraging dense text to assist visual patch selection, the SEPS framework achieves a more comprehensive scene understanding, which is the key to its state-of-the-art recall in complex fine-grained alignment tasks.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=\linewidth]{appendix_1.pdf}
+    \caption{The visualization of cross-modal alignment results of SEPS.}
+    \label{fig:alignment}
+    \vspace{-0.5cm}
+\end{figure}
+% \begin{figure}
+%     \centering
+%     \includegraphics[width=\linewidth]{hyperprameters.pdf}
+%     \caption{The comparison of different selection ratios $\rho$, constant coefficients $\lambda_1$ and $\lambda_2 $ with various visual encoders on Flick30K}
+%     \label{fig:hyperprameters}
+% \end{figure}
+
+\end{document}
