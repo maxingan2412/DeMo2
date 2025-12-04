@@ -44,7 +44,7 @@ def do_train(cfg,
     else:
         evaluator = R1_mAP_eval(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM)
     scaler = amp.GradScaler()
-    test_sign = cfg.MODEL.HDM or cfg.MODEL.ATM
+    test_sign = cfg.MODEL.HDM or cfg.MODEL.ATM or cfg.MODEL.USE_SDTPS
     # train
     best_index = {'mAP': 0, "Rank-1": 0, 'Rank-5': 0, 'Rank-10': 0}
     for epoch in range(1, epochs + 1):

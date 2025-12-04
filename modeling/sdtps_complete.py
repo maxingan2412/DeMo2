@@ -317,21 +317,22 @@ class MultiModalSDTPS(nn.Module):
         global_feat: torch.Tensor,   # (B, C)
     ) -> torch.Tensor:
         """
-        计算自注意力 s^{im}（修复版：添加 no_grad）
+        计算自注意力 s^{im}
 
-        对应原代码 cross_net.py line 160-164
+        注意：移除了 no_grad 以允许 Backbone finetune
+        原 SEPS 论文使用 no_grad 因为 Backbone 冻结
+        但重识别任务需要 Backbone 学习判别性特征
         """
         if global_feat.dim() == 2:
             global_feat = global_feat.unsqueeze(1)
 
-        # 修复：添加 with torch.no_grad()
-        with torch.no_grad():
-            # L2归一化
-            patches_norm = F.normalize(patches, dim=-1)
-            global_norm = F.normalize(global_feat, dim=-1)
+        # 移除 no_grad 以允许梯度传播到 Backbone
+        # L2归一化
+        patches_norm = F.normalize(patches, dim=-1)
+        global_norm = F.normalize(global_feat, dim=-1)
 
-            # 点积相似度
-            self_attn = (patches_norm * global_norm).sum(dim=-1)
+        # 点积相似度
+        self_attn = (patches_norm * global_norm).sum(dim=-1)
 
         return self_attn  # (B, N)
 
@@ -341,18 +342,18 @@ class MultiModalSDTPS(nn.Module):
         cross_global: torch.Tensor,  # (B, C)
     ) -> torch.Tensor:
         """
-        计算交叉注意力 s^{st} / s^{dt}（修复版：添加 no_grad）
+        计算交叉注意力 s^{st} / s^{dt}
 
-        对应原代码 cross_net.py line 183-185
+        注意：移除了 no_grad 以允许跨模态学习
+        允许梯度在不同模态之间传播，实现跨模态引导的特征学习
         """
         if cross_global.dim() == 2:
             cross_global = cross_global.unsqueeze(1)
 
-        # 修复：添加 with torch.no_grad()
-        with torch.no_grad():
-            patches_norm = F.normalize(patches, dim=-1)
-            cross_norm = F.normalize(cross_global, dim=-1)
-            cross_attn = (patches_norm * cross_norm).sum(dim=-1)
+        # 移除 no_grad 以允许跨模态梯度传播
+        patches_norm = F.normalize(patches, dim=-1)
+        cross_norm = F.normalize(cross_global, dim=-1)
+        cross_attn = (patches_norm * cross_norm).sum(dim=-1)
 
         return cross_attn  # (B, N)
 
