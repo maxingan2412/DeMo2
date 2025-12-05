@@ -107,7 +107,7 @@ Multi-modal object ReID combines the strengths of different modalities (e.g., RG
     <img src="results/rank-list.png" alt="Rank-list" style="width:100%;">
 </p>
 
----
+--- mlr1992dE+rK
 
 ## **Reproduction**
 
