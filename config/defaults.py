@@ -33,6 +33,9 @@ _C.MODEL.ADAPTER = False # From MambaPro
 _C.MODEL.FROZEN = False # whether to freeze the backbone
 _C.MODEL.HDM = False # whether to use HDM in DeMo
 _C.MODEL.ATM = False # whether to use ATM in DeMo
+# SACR: Scale-Adaptive Contextual Refinement
+_C.MODEL.USE_SACR = False # whether to use SACR before SDTPS
+_C.MODEL.SACR_DILATION_RATES = [6, 12, 18] # dilation rates for atrous convolutions
 # SDTPS: Sparse and Dense Token-Aware Patch Selection
 _C.MODEL.USE_SDTPS = False # whether to use SDTPS (replaces HDM+ATM)
 _C.MODEL.SDTPS_SPARSE_RATIO = 0.5 # token selection ratio (same as paper)

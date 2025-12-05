@@ -8,6 +8,7 @@ import copy
 from modeling.meta_arch import build_transformer, weights_init_classifier, weights_init_kaiming
 from modeling.moe.AttnMOE import GeneralFusion, QuickGELU
 from modeling.sdtps_complete import MultiModalSDTPS
+from modeling.sacr import SACR
 import torch
 
 
@@ -32,6 +33,7 @@ class DeMo(nn.Module):
         self.miss_type = cfg.TEST.MISS
         self.HDM = cfg.MODEL.HDM
         self.ATM = cfg.MODEL.ATM
+        self.USE_SACR = cfg.MODEL.USE_SACR
         self.USE_SDTPS = cfg.MODEL.USE_SDTPS
         self.GLOBAL_LOCAL = cfg.MODEL.GLOBAL_LOCAL
         self.head = cfg.MODEL.HEAD
@@ -43,6 +45,34 @@ class DeMo(nn.Module):
                                             nn.Linear(2 * self.feat_dim, self.feat_dim), QuickGELU())
             self.tir_reduce = nn.Sequential(nn.LayerNorm(2 * self.feat_dim),
                                             nn.Linear(2 * self.feat_dim, self.feat_dim), QuickGELU())
+
+        # SACR: 在 SDTPS 之前对 patch 特征进行增强
+        if self.USE_SACR:
+            # 计算 patch grid 尺寸
+            h, w = cfg.INPUT.SIZE_TRAIN
+            stride_h, stride_w = cfg.MODEL.STRIDE_SIZE
+            patch_h = h // stride_h  # 256 / 16 = 16
+            patch_w = w // stride_w  # 128 / 16 = 8
+
+            # 为三个模态分别创建 SACR 模块
+            self.rgb_sacr = SACR(
+                token_dim=self.feat_dim,
+                height=patch_h,
+                width=patch_w,
+                dilation_rates=cfg.MODEL.SACR_DILATION_RATES,
+            )
+            self.nir_sacr = SACR(
+                token_dim=self.feat_dim,
+                height=patch_h,
+                width=patch_w,
+                dilation_rates=cfg.MODEL.SACR_DILATION_RATES,
+            )
+            self.tir_sacr = SACR(
+                token_dim=self.feat_dim,
+                height=patch_h,
+                width=patch_w,
+                dilation_rates=cfg.MODEL.SACR_DILATION_RATES,
+            )
 
         if self.HDM or self.ATM:
             self.generalFusion = GeneralFusion(feat_dim=self.feat_dim, num_experts=7, head=self.head, reg_weight=0,
@@ -142,6 +172,12 @@ class DeMo(nn.Module):
                 NI_global = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))
                 TI_global = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))
 
+            # SACR: 对 patch 特征进行多尺度上下文增强
+            if self.USE_SACR:
+                RGB_cash = self.rgb_sacr(RGB_cash)  # (B, N, C) → (B, N, C)
+                NI_cash = self.nir_sacr(NI_cash)    # (B, N, C) → (B, N, C)
+                TI_cash = self.tir_sacr(TI_cash)    # (B, N, C) → (B, N, C)
+
             # SDTPS 分支：使用 token selection 替代 HDM+ATM
             if self.USE_SDTPS:
                 # SDTPS token selection and enhancement
@@ -216,6 +252,13 @@ class DeMo(nn.Module):
                 RGB_global = self.rgb_reduce(torch.cat([RGB_global, RGB_local], dim=-1))
                 NI_global = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))
                 TI_global = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))
+
+            # SACR: 对 patch 特征进行多尺度上下文增强
+            if self.USE_SACR:
+                RGB_cash = self.rgb_sacr(RGB_cash)  # (B, N, C) → (B, N, C)
+                NI_cash = self.nir_sacr(NI_cash)    # (B, N, C) → (B, N, C)
+                TI_cash = self.tir_sacr(TI_cash)    # (B, N, C) → (B, N, C)
+
             ori = torch.cat([RGB_global, NI_global, TI_global], dim=-1)
 
             # SDTPS 推理分支
