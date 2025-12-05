@@ -103,8 +103,9 @@ class TokenSparse(nn.Module):
 
         # Gumbel-Softmax（可选）
         if self.training and self.use_gumbel:
-            # Gumbel噪声
+            # Gumbel噪声（添加裁剪避免极端值）
             gumbel_noise = -torch.log(-torch.log(torch.rand_like(score) + 1e-9) + 1e-9)
+            gumbel_noise = torch.clamp(gumbel_noise, min=-5.0, max=5.0)  # 裁剪到[-5, 5]
             soft_mask = F.softmax((score + gumbel_noise) / self.gumbel_tau, dim=1)
 
             # Hard mask
