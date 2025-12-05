@@ -40,6 +40,7 @@ _C.MODEL.SDTPS_AGGR_RATIO = 0.4 # token aggregation ratio (same as paper)
 _C.MODEL.SDTPS_BETA = 0.25 # score combination weight parameter
 _C.MODEL.SDTPS_USE_GUMBEL = False # whether to use Gumbel-Softmax
 _C.MODEL.SDTPS_GUMBEL_TAU = 1.0 # Gumbel temperature
+_C.MODEL.SDTPS_LOSS_WEIGHT = 2.0 # loss weight for SDTPS branch (vs ori=1.0)
 # If train with label smooth, options: 'on', 'off'
 _C.MODEL.IF_LABELSMOOTH = 'on'
 # If train with the contact feature

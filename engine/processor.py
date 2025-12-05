@@ -69,11 +69,17 @@ def do_train(cfg,
                     index = len(output) - 1
                     for i in range(0, index, 2):
                         loss_tmp = loss_fn(score=output[i], feat=output[i + 1], target=target, target_cam=target_cam)
+                        # SDTPS 分支使用更大的权重
+                        if cfg.MODEL.USE_SDTPS and i == 0:
+                            loss_tmp = loss_tmp * cfg.MODEL.SDTPS_LOSS_WEIGHT
                         loss = loss + loss_tmp
                     loss = loss + output[-1]
                 else:
                     for i in range(0, len(output), 2):
                         loss_tmp = loss_fn(score=output[i], feat=output[i + 1], target=target, target_cam=target_cam)
+                        # SDTPS 分支使用更大的权重（假设 sdtps 在前两个输出）
+                        if cfg.MODEL.USE_SDTPS and i == 0:
+                            loss_tmp = loss_tmp * cfg.MODEL.SDTPS_LOSS_WEIGHT
                         loss = loss + loss_tmp
             scaler.scale(loss).backward()
             scaler.step(optimizer)
