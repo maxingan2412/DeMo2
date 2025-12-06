@@ -175,31 +175,40 @@ class DeMo(nn.Module):
                 TI_cash = self.sacr(TI_cash)    # (B, N, C) → (B, N, C)
 
             # Trimodal-LIF: Quality-aware feature enhancement
-            # LIF 计算质量感知权重，增强高质量模态的特征
+            # LIF 计算质量感知权重，对 patch 特征进行逐位置加权
             lif_loss = None
             if self.USE_LIF:
-                # 1. 预测质量图
+                # 1. 预测质量图（从原始图像）
                 q_rgb, q_nir, q_tir = self.lif.predict_quality(RGB, NI, TI)
+                # q_rgb: (B, 1, 80, 40) - 空间分辨率的质量图
 
                 # 2. 计算 LIF 损失（自监督）
                 lif_loss = self.lif_loss(q_rgb, q_nir, q_tir, RGB, NI, TI)['total']
 
-                # 3. 用质量图加权 global 特征（关键增强步骤！）
-                # 将质量图池化为标量权重
-                q_rgb_scalar = F.adaptive_avg_pool2d(q_rgb, 1).view(-1, 1)  # (B, 1)
-                q_nir_scalar = F.adaptive_avg_pool2d(q_nir, 1).view(-1, 1)  # (B, 1)
-                q_tir_scalar = F.adaptive_avg_pool2d(q_tir, 1).view(-1, 1)  # (B, 1)
+                # 3. 将质量图 resize 到 patch grid 尺寸（16×8）
+                patch_h = self.image_size[0] // cfg.MODEL.STRIDE_SIZE[0]  # 256/16 = 16
+                patch_w = self.image_size[1] // cfg.MODEL.STRIDE_SIZE[1]  # 128/16 = 8
 
-                # Softmax 归一化权重（质量高的模态权重大）
-                q_weights = torch.cat([q_rgb_scalar, q_nir_scalar, q_tir_scalar], dim=1)  # (B, 3)
-                q_weights = F.softmax(q_weights * 10.0, dim=1)  # (B, 3)
+                q_rgb_patch = F.interpolate(q_rgb, size=(patch_h, patch_w), mode='bilinear')  # (B, 1, 16, 8)
+                q_nir_patch = F.interpolate(q_nir, size=(patch_h, patch_w), mode='bilinear')  # (B, 1, 16, 8)
+                q_tir_patch = F.interpolate(q_tir, size=(patch_h, patch_w), mode='bilinear')  # (B, 1, 16, 8)
 
-                # 加权增强 global 特征
-                RGB_global = RGB_global * q_weights[:, 0:1]  # (B, C) * (B, 1) = (B, C)
-                NI_global = NI_global * q_weights[:, 1:2]
-                TI_global = TI_global * q_weights[:, 2:3]
+                # 4. 计算逐位置的模态权重（每个 patch 位置有独立权重）
+                q_logits = torch.cat([q_rgb_patch, q_nir_patch, q_tir_patch], dim=1)  # (B, 3, 16, 8)
+                q_weights_spatial = F.softmax(q_logits * 10.0, dim=1)  # (B, 3, 16, 8)
 
-                # 注意：这保持了三个模态的独立性，SDTPS 的跨模态机制仍然有效
+                # 5. Reshape 为 token 维度：(B, 1, 16, 8) → (B, 128, 1)
+                w_rgb_token = q_weights_spatial[:, 0:1].flatten(2).transpose(1, 2)  # (B, 128, 1)
+                w_nir_token = q_weights_spatial[:, 1:2].flatten(2).transpose(1, 2)  # (B, 128, 1)
+                w_tir_token = q_weights_spatial[:, 2:3].flatten(2).transpose(1, 2)  # (B, 128, 1)
+
+                # 6. 加权 patch 特征（逐 patch 加权！）
+                RGB_cash = RGB_cash * w_rgb_token  # (B, 128, 512) * (B, 128, 1)
+                NI_cash = NI_cash * w_nir_token    # 每个 patch 根据其位置的质量被加权
+                TI_cash = TI_cash * w_tir_token
+
+                # 效果：图像左边亮（RGB patch权重大），右边暗（NIR/TIR patch权重大）
+                # 这是真正的局部质量感知增强！
 
             # SDTPS 分支：使用 token selection 替代 HDM+ATM
             if self.USE_SDTPS:
@@ -310,20 +319,29 @@ class DeMo(nn.Module):
 
             # Trimodal-LIF: Quality-aware feature enhancement (推理时也使用)
             if self.USE_LIF:
-                # 预测质量图
+                # 1. 预测质量图
                 q_rgb, q_nir, q_tir = self.lif.predict_quality(RGB, NI, TI)
 
-                # 用质量图加权 global 特征
-                q_rgb_scalar = F.adaptive_avg_pool2d(q_rgb, 1).view(-1, 1)
-                q_nir_scalar = F.adaptive_avg_pool2d(q_nir, 1).view(-1, 1)
-                q_tir_scalar = F.adaptive_avg_pool2d(q_tir, 1).view(-1, 1)
+                # 2. Resize 到 patch grid 尺寸
+                patch_h = self.image_size[0] // self.BACKBONE.base.conv1.stride[0]
+                patch_w = self.image_size[1] // self.BACKBONE.base.conv1.stride[1]
 
-                q_weights = torch.cat([q_rgb_scalar, q_nir_scalar, q_tir_scalar], dim=1)
-                q_weights = F.softmax(q_weights * 10.0, dim=1)
+                q_rgb_patch = F.interpolate(q_rgb, size=(patch_h, patch_w), mode='bilinear')
+                q_nir_patch = F.interpolate(q_nir, size=(patch_h, patch_w), mode='bilinear')
+                q_tir_patch = F.interpolate(q_tir, size=(patch_h, patch_w), mode='bilinear')
 
-                RGB_global = RGB_global * q_weights[:, 0:1]
-                NI_global = NI_global * q_weights[:, 1:2]
-                TI_global = TI_global * q_weights[:, 2:3]
+                # 3. 计算逐位置权重
+                q_logits = torch.cat([q_rgb_patch, q_nir_patch, q_tir_patch], dim=1)
+                q_weights_spatial = F.softmax(q_logits * 10.0, dim=1)
+
+                # 4. Reshape 为 token 维度并加权 patch 特征
+                w_rgb_token = q_weights_spatial[:, 0:1].flatten(2).transpose(1, 2)
+                w_nir_token = q_weights_spatial[:, 1:2].flatten(2).transpose(1, 2)
+                w_tir_token = q_weights_spatial[:, 2:3].flatten(2).transpose(1, 2)
+
+                RGB_cash = RGB_cash * w_rgb_token
+                NI_cash = NI_cash * w_nir_token
+                TI_cash = TI_cash * w_tir_token
 
             ori = torch.cat([RGB_global, NI_global, TI_global], dim=-1)
 
