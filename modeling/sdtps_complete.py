@@ -72,7 +72,7 @@ class TokenSparse(nn.Module):
             select_tokens: (B, N_s, C) - 选中的patches
             extra_token: (B, 1, C) - 融合的冗余patches
             score_mask: (B, N) - 完整的决策矩阵 D
-            selected_mask: (B, N_s) - 选中patches对应的mask值（传给aggregation）
+            selected_importance: (B, N_s) - 选中patches的重要性得分（softmax归一化）
             keep_indices: (B, N_s) - 选中patches的索引
         """
         B, N, C = tokens.size()
@@ -134,11 +134,13 @@ class TokenSparse(nn.Module):
         non_keep_score = F.softmax(non_keep_score, dim=1).unsqueeze(-1)
         extra_token = torch.sum(non_tokens * non_keep_score, dim=1, keepdim=True)  # (B, 1, C)
 
-        # ========== 提取选中patches对应的mask值 ==========
-        # 用于传递给TokenAggregation（论文第169行要求）
-        selected_mask = torch.gather(score_mask, dim=1, index=keep_policy)  # (B, N_s)
+        # ========== 修复：传递真正的软重要性得分 ==========
+        # 使用排序后的 Top-K 得分（softmax归一化），而非二值 mask
+        # 这样 Gumbel 的软权重可以影响聚合过程
+        selected_scores = score_sorted[:, :num_keep]  # (B, N_s) - 排序后的 Top-K 得分
+        selected_importance = F.softmax(selected_scores, dim=1)  # (B, N_s) - 归一化为权重
 
-        return select_tokens, extra_token, score_mask, selected_mask, keep_policy
+        return select_tokens, extra_token, score_mask, selected_importance, keep_policy
 
 
 class TokenAggregation(nn.Module):
@@ -152,6 +154,9 @@ class TokenAggregation(nn.Module):
     - W ∈ R^{N_c × N_s}: 聚合权重矩阵
     - W = Softmax(MLP(V_s))
     - Σ_i W_{ji} = 1 (每行归一化)
+
+    修复：支持通过 importance_weights 引入软权重
+    聚合时考虑每个 token 的重要性得分
 
     输出: N_s → N_c (进一步压缩)
     """
@@ -178,15 +183,15 @@ class TokenAggregation(nn.Module):
 
     def forward(
         self,
-        x: torch.Tensor,                      # (B, N_s, C)
-        keep_policy: Optional[torch.Tensor] = None,  # (B, N_s) - 可选的mask
+        x: torch.Tensor,                           # (B, N_s, C)
+        importance_weights: Optional[torch.Tensor] = None,  # (B, N_s) - 重要性权重
     ) -> torch.Tensor:
         """
         聚合tokens
 
         Args:
             x: (B, N_s, C) - 选中的tokens
-            keep_policy: (B, N_s) or None - 决策矩阵D（可选）
+            importance_weights: (B, N_s) or None - 每个token的重要性权重（softmax归一化）
 
         Returns:
             (B, N_c, C) - 聚合后的tokens
@@ -197,7 +202,7 @@ class TokenAggregation(nn.Module):
             weight (B, N_s, N_c)
               ↓ transpose
             weight (B, N_c, N_s)
-              ↓ (可选) mask by keep_policy
+              ↓ (可选) 乘以 importance_weights
               ↓ softmax
             weight (B, N_c, N_s), Σ_i W[b,j,i]=1
               ↓ bmm
@@ -208,10 +213,12 @@ class TokenAggregation(nn.Module):
         weight = weight.transpose(2, 1)       # (B, N_s, N_c) → (B, N_c, N_s)
         weight = weight * self.scale          # 可学习缩放
 
-        # 如果有keep_policy，用它来mask无效位置
-        if keep_policy is not None:
-            keep_policy = keep_policy.unsqueeze(1)  # (B, N_s) → (B, 1, N_s)
-            weight = weight - (1 - keep_policy) * 1e10  # mask
+        # 如果有 importance_weights，用它来调整聚合权重
+        # 重要性高的 token 在聚合时获得更大的权重
+        if importance_weights is not None:
+            importance_weights = importance_weights.unsqueeze(1)  # (B, N_s) → (B, 1, N_s)
+            # 将重要性权重加到 logits 上（log 空间相加 = 概率空间相乘）
+            weight = weight + torch.log(importance_weights + 1e-8)
 
         # Softmax归一化（保证每个聚合token的权重和为1）
         weight = F.softmax(weight, dim=2)     # (B, N_c, N_s)
@@ -387,7 +394,7 @@ class MultiModalSDTPS(nn.Module):
         rgb_tir_cross = self._compute_cross_attention(RGB_cash, TI_global)
 
         # Step 2: TokenSparse - 选择显著patches
-        rgb_select, rgb_extra, rgb_mask, rgb_selected_mask, rgb_indices = self.rgb_sparse(
+        rgb_select, rgb_extra, rgb_mask, rgb_importance, rgb_indices = self.rgb_sparse(
             tokens=RGB_cash,
             self_attention=rgb_self_attn,
             cross_attention_m2=rgb_nir_cross,
@@ -395,10 +402,10 @@ class MultiModalSDTPS(nn.Module):
             beta=self.beta,
         )  # (B, N_s, C), (B, 1, C), (B, N), (B, N_s), (B, N_s)
 
-        # Step 3: TokenAggregation - 聚合patches（传递 selected_mask！）
+        # Step 3: TokenAggregation - 聚合patches（传递重要性权重！）
         rgb_aggr = self.rgb_aggr(
             x=rgb_select,
-            keep_policy=rgb_selected_mask  # ← 关键：传递 Gumbel 生成的 mask！
+            importance_weights=rgb_importance  # ← 使用软重要性权重
         )  # (B, N_s, C) → (B, N_c, C)
 
         # Step 4: 拼接聚合tokens和extra token
@@ -409,7 +416,7 @@ class MultiModalSDTPS(nn.Module):
         nir_rgb_cross = self._compute_cross_attention(NI_cash, RGB_global)
         nir_tir_cross = self._compute_cross_attention(NI_cash, TI_global)
 
-        nir_select, nir_extra, nir_mask, nir_selected_mask, nir_indices = self.nir_sparse(
+        nir_select, nir_extra, nir_mask, nir_importance, nir_indices = self.nir_sparse(
             tokens=NI_cash,
             self_attention=nir_self_attn,
             cross_attention_m2=nir_rgb_cross,
@@ -419,7 +426,7 @@ class MultiModalSDTPS(nn.Module):
 
         nir_aggr = self.nir_aggr(
             x=nir_select,
-            keep_policy=nir_selected_mask  # ← 传递 mask
+            importance_weights=nir_importance  # ← 使用软重要性权重
         )
         NI_enhanced = torch.cat([nir_aggr, nir_extra], dim=1)  # (B, N_c+1, C)
 
@@ -428,7 +435,7 @@ class MultiModalSDTPS(nn.Module):
         tir_rgb_cross = self._compute_cross_attention(TI_cash, RGB_global)
         tir_nir_cross = self._compute_cross_attention(TI_cash, NI_global)
 
-        tir_select, tir_extra, tir_mask, tir_selected_mask, tir_indices = self.tir_sparse(
+        tir_select, tir_extra, tir_mask, tir_importance, tir_indices = self.tir_sparse(
             tokens=TI_cash,
             self_attention=tir_self_attn,
             cross_attention_m2=tir_rgb_cross,
@@ -438,7 +445,7 @@ class MultiModalSDTPS(nn.Module):
 
         tir_aggr = self.tir_aggr(
             x=tir_select,
-            keep_policy=tir_selected_mask  # ← 传递 mask
+            importance_weights=tir_importance  # ← 使用软重要性权重
         )
         TI_enhanced = torch.cat([tir_aggr, tir_extra], dim=1)  # (B, N_c+1, C)
 

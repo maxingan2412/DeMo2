@@ -69,6 +69,11 @@ class DeMo(nn.Module):
         if self.USE_LIF:
             self.lif = TrimodalLIF(beta=cfg.MODEL.LIF_BETA)
             self.lif_loss = TrimodalLIFLoss()
+            # 存储温度参数，用于 softmax 加权
+            # 注意：原始 M2D-LIF 使用 beta*10 作为温度，这里提供可配置选项
+            # 较高温度（如10）会使权重更尖锐（近乎 one-hot）
+            # 较低温度（如1-3）会使权重更平滑（软融合）
+            self.lif_temperature = cfg.MODEL.LIF_BETA * 10.0  # 默认：0.4 * 10 = 4.0
 
         if self.HDM or self.ATM:
             self.generalFusion = GeneralFusion(feat_dim=self.feat_dim, num_experts=7, head=self.head, reg_weight=0,
@@ -195,7 +200,9 @@ class DeMo(nn.Module):
 
                 # 4. 计算逐位置的模态权重（每个 patch 位置有独立权重）
                 q_logits = torch.cat([q_rgb_patch, q_nir_patch, q_tir_patch], dim=1)  # (B, 3, 16, 8)
-                q_weights_spatial = F.softmax(q_logits * 10.0, dim=1)  # (B, 3, 16, 8)
+                # 使用配置的温度参数，而非硬编码
+                # LIF_BETA=0.4 时温度=4.0，比硬编码的10.0更平滑
+                q_weights_spatial = F.softmax(q_logits * self.lif_temperature, dim=1)  # (B, 3, 16, 8)
 
                 # 5. Reshape 为 token 维度：(B, 1, 16, 8) → (B, 128, 1)
                 w_rgb_token = q_weights_spatial[:, 0:1].flatten(2).transpose(1, 2)  # (B, 128, 1)
@@ -332,7 +339,7 @@ class DeMo(nn.Module):
 
                 # 3. 计算逐位置权重
                 q_logits = torch.cat([q_rgb_patch, q_nir_patch, q_tir_patch], dim=1)
-                q_weights_spatial = F.softmax(q_logits * 10.0, dim=1)
+                q_weights_spatial = F.softmax(q_logits * self.lif_temperature, dim=1)
 
                 # 4. Reshape 为 token 维度并加权 patch 特征
                 w_rgb_token = q_weights_spatial[:, 0:1].flatten(2).transpose(1, 2)
