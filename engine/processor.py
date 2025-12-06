@@ -18,7 +18,7 @@ def do_train(cfg,
              optimizer_center,
              scheduler,
              loss_fn,
-             num_query, local_rank):
+             num_query, local_rank, exp_name=None):
     log_period = cfg.SOLVER.LOG_PERIOD
     checkpoint_period = cfg.SOLVER.CHECKPOINT_PERIOD
     eval_period = cfg.SOLVER.EVAL_PERIOD
@@ -132,15 +132,6 @@ def do_train(cfg,
             logger.info("Epoch {} done. Time per batch: {:.3f}[s] Speed: {:.1f}[samples/s]"
                         .format(epoch, time_per_batch, train_loader.batch_size / time_per_batch))
 
-        if epoch % checkpoint_period == 0:
-            if cfg.MODEL.DIST_TRAIN:
-                if dist.get_rank() == 0:
-                    torch.save(model.state_dict(),
-                               os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
-            else:
-                torch.save(model.state_dict(),
-                           os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
-
         if epoch % eval_period == 0:
             if cfg.MODEL.DIST_TRAIN:
                 if dist.get_rank() == 0:
@@ -158,8 +149,13 @@ def do_train(cfg,
                     best_index['Rank-1'] = cmc[0]
                     best_index['Rank-5'] = cmc[4]
                     best_index['Rank-10'] = cmc[9]
+                    # 使用实验名称生成best.pth文件名
+                    if exp_name:
+                        best_pth_name = f"{exp_name}_best.pth"
+                    else:
+                        best_pth_name = cfg.MODEL.NAME + '_best.pth'
                     torch.save(model.state_dict(),
-                               os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + 'best.pth'))
+                               os.path.join(cfg.OUTPUT_DIR, best_pth_name))
                 logger.info("~" * 50)
                 logger.info("Best mAP: {:.1%}".format(best_index['mAP']))
                 logger.info("Best Rank-1: {:.1%}".format(best_index['Rank-1']))

@@ -92,5 +92,5 @@ if __name__ == '__main__':
         optimizer_center,
         scheduler,
         loss_func,
-        num_query, args.local_rank
+        num_query, args.local_rank, exp_name=args.exp_name
     )
