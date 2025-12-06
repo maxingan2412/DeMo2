@@ -19,12 +19,15 @@ def setup_logger(name, save_dir, if_train):
         if not osp.exists(save_dir):
             os.makedirs(save_dir)
 
-        # 生成带时间戳的日志文件名
+        # 生成带时间戳和脚本名的日志文件名
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # 获取执行的脚本名（不带路径和扩展名）
+        script_name = osp.splitext(osp.basename(sys.argv[0]))[0]  # e.g., "train_net"
+
         if if_train:
-            log_file = os.path.join(save_dir, f"train_log_{timestamp}.txt")
+            log_file = os.path.join(save_dir, f"train_log_{timestamp}_{script_name}.txt")
         else:
-            log_file = os.path.join(save_dir, f"test_log_{timestamp}.txt")
+            log_file = os.path.join(save_dir, f"test_log_{timestamp}_{script_name}.txt")
 
         fh = logging.FileHandler(log_file, mode='w')
         fh.setLevel(logging.DEBUG)
