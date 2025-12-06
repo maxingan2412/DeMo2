@@ -34,9 +34,9 @@ total_params = sum(p.numel() for p in model.parameters())
 print(f"\n总参数量: {total_params:,} ({total_params/1e6:.2f}M)")
 
 # SACR 参数量
-if hasattr(model, 'rgb_sacr'):
-    sacr_params = sum(p.numel() for p in model.rgb_sacr.parameters()) * 3  # 3个模态
-    print(f"SACR (×3): {sacr_params:,} ({sacr_params/1e6:.3f}M) - {sacr_params/total_params*100:.2f}%")
+if hasattr(model, 'sacr'):
+    sacr_params = sum(p.numel() for p in model.sacr.parameters())
+    print(f"SACR (共用): {sacr_params:,} ({sacr_params/1e6:.3f}M) - {sacr_params/total_params*100:.2f}%")
 
 # SDTPS 参数量
 if hasattr(model, 'sdtps'):
@@ -89,9 +89,9 @@ if isinstance(output, tuple) and len(output) >= 2:
     loss.backward()
 
     # 检查 SACR 的梯度
-    if hasattr(model, 'rgb_sacr'):
+    if hasattr(model, 'sacr'):
         sacr_has_grad = any(p.grad is not None and p.grad.abs().sum() > 0
-                           for p in model.rgb_sacr.parameters())
+                           for p in model.sacr.parameters())
         print(f"  SACR 是否有梯度: {sacr_has_grad}")
 
     # 检查 SDTPS 的梯度

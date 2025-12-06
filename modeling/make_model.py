@@ -54,20 +54,8 @@ class DeMo(nn.Module):
             patch_h = h // stride_h  # 256 / 16 = 16
             patch_w = w // stride_w  # 128 / 16 = 8
 
-            # 为三个模态分别创建 SACR 模块
-            self.rgb_sacr = SACR(
-                token_dim=self.feat_dim,
-                height=patch_h,
-                width=patch_w,
-                dilation_rates=cfg.MODEL.SACR_DILATION_RATES,
-            )
-            self.nir_sacr = SACR(
-                token_dim=self.feat_dim,
-                height=patch_h,
-                width=patch_w,
-                dilation_rates=cfg.MODEL.SACR_DILATION_RATES,
-            )
-            self.tir_sacr = SACR(
+            # 三个模态共用一个 SACR 模块（减少参数量）
+            self.sacr = SACR(
                 token_dim=self.feat_dim,
                 height=patch_h,
                 width=patch_w,
@@ -172,11 +160,11 @@ class DeMo(nn.Module):
                 NI_global = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))
                 TI_global = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))
 
-            # SACR: 对 patch 特征进行多尺度上下文增强
+            # SACR: 对 patch 特征进行多尺度上下文增强（三个模态共用）
             if self.USE_SACR:
-                RGB_cash = self.rgb_sacr(RGB_cash)  # (B, N, C) → (B, N, C)
-                NI_cash = self.nir_sacr(NI_cash)    # (B, N, C) → (B, N, C)
-                TI_cash = self.tir_sacr(TI_cash)    # (B, N, C) → (B, N, C)
+                RGB_cash = self.sacr(RGB_cash)  # (B, N, C) → (B, N, C)
+                NI_cash = self.sacr(NI_cash)    # (B, N, C) → (B, N, C)
+                TI_cash = self.sacr(TI_cash)    # (B, N, C) → (B, N, C)
 
             # SDTPS 分支：使用 token selection 替代 HDM+ATM
             if self.USE_SDTPS:
@@ -253,11 +241,11 @@ class DeMo(nn.Module):
                 NI_global = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))
                 TI_global = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))
 
-            # SACR: 对 patch 特征进行多尺度上下文增强
+            # SACR: 对 patch 特征进行多尺度上下文增强（三个模态共用）
             if self.USE_SACR:
-                RGB_cash = self.rgb_sacr(RGB_cash)  # (B, N, C) → (B, N, C)
-                NI_cash = self.nir_sacr(NI_cash)    # (B, N, C) → (B, N, C)
-                TI_cash = self.tir_sacr(TI_cash)    # (B, N, C) → (B, N, C)
+                RGB_cash = self.sacr(RGB_cash)  # (B, N, C) → (B, N, C)
+                NI_cash = self.sacr(NI_cash)    # (B, N, C) → (B, N, C)
+                TI_cash = self.sacr(TI_cash)    # (B, N, C) → (B, N, C)
 
             ori = torch.cat([RGB_global, NI_global, TI_global], dim=-1)
 
