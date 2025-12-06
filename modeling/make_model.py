@@ -173,19 +173,32 @@ class DeMo(nn.Module):
                 NI_cash = self.sacr(NI_cash)    # (B, N, C) → (B, N, C)
                 TI_cash = self.sacr(TI_cash)    # (B, N, C) → (B, N, C)
 
-            # Trimodal-LIF: Quality-aware multi-modal fusion (only during training)
-            # Note: LIF computes quality loss for self-supervised learning
+            # Trimodal-LIF: Quality-aware feature enhancement
+            # LIF 计算质量感知权重，增强高质量模态的特征
             lif_loss = None
             if self.USE_LIF:
-                # LIF 计算质量感知的融合
-                # LIF uses predict_quality to compute quality maps from images
+                # 1. 预测质量图
                 q_rgb, q_nir, q_tir = self.lif.predict_quality(RGB, NI, TI)
-                # 计算 LIF 损失（自监督）
+
+                # 2. 计算 LIF 损失（自监督）
                 lif_loss = self.lif_loss(q_rgb, q_nir, q_tir, RGB, NI, TI)['total']
-                # Note: We don't apply LIF fusion to features in this integration
-                # as it requires early-stage feature maps. In a full implementation,
-                # LIF could be applied at intermediate backbone layers.
-                # For now, LIF serves as an auxiliary self-supervised loss.
+
+                # 3. 用质量图加权 global 特征（关键增强步骤！）
+                # 将质量图池化为标量权重
+                q_rgb_scalar = F.adaptive_avg_pool2d(q_rgb, 1).view(-1, 1)  # (B, 1)
+                q_nir_scalar = F.adaptive_avg_pool2d(q_nir, 1).view(-1, 1)  # (B, 1)
+                q_tir_scalar = F.adaptive_avg_pool2d(q_tir, 1).view(-1, 1)  # (B, 1)
+
+                # Softmax 归一化权重（质量高的模态权重大）
+                q_weights = torch.cat([q_rgb_scalar, q_nir_scalar, q_tir_scalar], dim=1)  # (B, 3)
+                q_weights = F.softmax(q_weights * 10.0, dim=1)  # (B, 3)
+
+                # 加权增强 global 特征
+                RGB_global = RGB_global * q_weights[:, 0:1]  # (B, C) * (B, 1) = (B, C)
+                NI_global = NI_global * q_weights[:, 1:2]
+                TI_global = TI_global * q_weights[:, 2:3]
+
+                # 注意：这保持了三个模态的独立性，SDTPS 的跨模态机制仍然有效
 
             # SDTPS 分支：使用 token selection 替代 HDM+ATM
             if self.USE_SDTPS:
@@ -293,6 +306,23 @@ class DeMo(nn.Module):
                 RGB_cash = self.sacr(RGB_cash)  # (B, N, C) → (B, N, C)
                 NI_cash = self.sacr(NI_cash)    # (B, N, C) → (B, N, C)
                 TI_cash = self.sacr(TI_cash)    # (B, N, C) → (B, N, C)
+
+            # Trimodal-LIF: Quality-aware feature enhancement (推理时也使用)
+            if self.USE_LIF:
+                # 预测质量图
+                q_rgb, q_nir, q_tir = self.lif.predict_quality(RGB, NI, TI)
+
+                # 用质量图加权 global 特征
+                q_rgb_scalar = F.adaptive_avg_pool2d(q_rgb, 1).view(-1, 1)
+                q_nir_scalar = F.adaptive_avg_pool2d(q_nir, 1).view(-1, 1)
+                q_tir_scalar = F.adaptive_avg_pool2d(q_tir, 1).view(-1, 1)
+
+                q_weights = torch.cat([q_rgb_scalar, q_nir_scalar, q_tir_scalar], dim=1)
+                q_weights = F.softmax(q_weights * 10.0, dim=1)
+
+                RGB_global = RGB_global * q_weights[:, 0:1]
+                NI_global = NI_global * q_weights[:, 1:2]
+                TI_global = TI_global * q_weights[:, 2:3]
 
             ori = torch.cat([RGB_global, NI_global, TI_global], dim=-1)
 
