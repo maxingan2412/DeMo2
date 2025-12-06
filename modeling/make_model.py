@@ -186,8 +186,8 @@ class DeMo(nn.Module):
                 lif_loss = self.lif_loss(q_rgb, q_nir, q_tir, RGB, NI, TI)['total']
 
                 # 3. 将质量图 resize 到 patch grid 尺寸（16×8）
-                patch_h = self.image_size[0] // cfg.MODEL.STRIDE_SIZE[0]  # 256/16 = 16
-                patch_w = self.image_size[1] // cfg.MODEL.STRIDE_SIZE[1]  # 128/16 = 8
+                patch_h = self.image_size[0] // self.cfg.MODEL.STRIDE_SIZE[0]  # 256/16 = 16
+                patch_w = self.image_size[1] // self.cfg.MODEL.STRIDE_SIZE[1]  # 128/16 = 8
 
                 q_rgb_patch = F.interpolate(q_rgb, size=(patch_h, patch_w), mode='bilinear')  # (B, 1, 16, 8)
                 q_nir_patch = F.interpolate(q_nir, size=(patch_h, patch_w), mode='bilinear')  # (B, 1, 16, 8)
@@ -323,8 +323,8 @@ class DeMo(nn.Module):
                 q_rgb, q_nir, q_tir = self.lif.predict_quality(RGB, NI, TI)
 
                 # 2. Resize 到 patch grid 尺寸
-                patch_h = self.image_size[0] // self.BACKBONE.base.conv1.stride[0]
-                patch_w = self.image_size[1] // self.BACKBONE.base.conv1.stride[1]
+                patch_h = self.image_size[0] // self.cfg.MODEL.STRIDE_SIZE[0]
+                patch_w = self.image_size[1] // self.cfg.MODEL.STRIDE_SIZE[1]
 
                 q_rgb_patch = F.interpolate(q_rgb, size=(patch_h, patch_w), mode='bilinear')
                 q_nir_patch = F.interpolate(q_nir, size=(patch_h, patch_w), mode='bilinear')
