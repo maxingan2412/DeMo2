@@ -180,7 +180,7 @@ class DeMo(nn.Module):
             if self.USE_LIF:
                 # 1. 预测质量图（从原始图像）
                 q_rgb, q_nir, q_tir = self.lif.predict_quality(RGB, NI, TI)
-                # q_rgb: (B, 1, 80, 40) - 空间分辨率的质量图
+                # q_rgb: (B, 1, 32, 16) - QualityPredictor 经过 3 次 AvgPool2d(2,2): 256×128 → 32×16
 
                 # 2. 计算 LIF 损失（自监督）
                 lif_loss = self.lif_loss(q_rgb, q_nir, q_tir, RGB, NI, TI)['total']

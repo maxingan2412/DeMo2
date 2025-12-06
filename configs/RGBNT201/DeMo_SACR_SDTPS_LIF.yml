@@ -10,9 +10,9 @@ MODEL:
   # Disable HDM and ATM, enable SACR + SDTPS + LIF
   HDM: False
   ATM: False
-  # SACR configuration
+  # SACR configuration (特征图尺寸 16×8，dilation 不宜过大)
   USE_SACR: True                     # Enable SACR (multi-scale context refinement)
-  SACR_DILATION_RATES: [6, 12, 18]   # Atrous convolution dilation rates
+  SACR_DILATION_RATES: [2, 3, 4]     # Atrous convolution dilation rates (适合 16×8 特征图)
   # SDTPS configuration
   USE_SDTPS: True                    # Enable SDTPS (Token selection)
   SDTPS_SPARSE_RATIO: 0.7           # Selection ratio
@@ -62,8 +62,29 @@ TEST:
 
 OUTPUT_DIR: '..'
 
-# Notes:
-# Complete pipeline: Backbone → SACR → SDTPS → LIF
-# SACR: Expands receptive field with multi-scale context
-# SDTPS: Cross-modal guided token selection and aggregation
-# LIF: Quality-aware fusion with self-supervised loss
+# ============================================================================
+# Notes - Shape 说明
+# ============================================================================
+# 数据流: Backbone → SACR → LIF加权 → SDTPS
+#
+# 输入:
+#   - 图像: (B, 3, 256, 128) - RGB/NIR/TIR 都是 3 通道
+#
+# Backbone (ViT-B-16) 输出:
+#   - patch 特征: (B, 128, 512) - 其中 128 = 16×8 patches
+#   - 全局特征: (B, 512)
+#
+# SACR:
+#   - 输入/输出: (B, 128, 512) → (B, 128, 512)
+#   - 内部 reshape 为 (B, 512, 16, 8) 进行空洞卷积
+#   - dilation rates [2, 3, 4] 适合 16×8 特征图
+#
+# LIF:
+#   - QualityPredictor 输出: (B, 1, 32, 16) - 经过 3 次 AvgPool2d(2,2)
+#   - resize 到 patch grid: (B, 1, 16, 8)
+#   - token 权重: (B, 128, 1)
+#
+# SDTPS:
+#   - 输入: (B, 128, 512) patch 特征 + (B, 512) 全局特征
+#   - 输出: (B, K+1, 512) 选择的 tokens
+# ============================================================================
