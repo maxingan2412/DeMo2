@@ -6,7 +6,7 @@ import os.path as osp
 from datetime import datetime
 
 
-def setup_logger(name, save_dir, if_train):
+def setup_logger(name, save_dir, if_train, exp_name=None):
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)
 
@@ -20,21 +20,28 @@ def setup_logger(name, save_dir, if_train):
         if not osp.exists(save_dir):
             os.makedirs(save_dir)
 
-        # 生成带时间戳和完整命令的日志文件名
+        # 生成带时间戳的日志文件名
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # 获取完整命令行参数: train_net.py --config_file configs/RGBNT201/DeMo.yml
-        cmd_args = " ".join(sys.argv)
-        # 替换特殊字符为下划线，确保文件名有效
-        cmd_args_safe = re.sub(r'[/\\:*?"<>|\s]+', '_', cmd_args)
+        # 如果提供了实验名称，使用它；否则使用完整命令行参数
+        if exp_name:
+            # 替换特殊字符为下划线
+            exp_name_safe = re.sub(r'[/\\:*?"<>|\s]+', '_', exp_name)
+            suffix = exp_name_safe
+        else:
+            # 获取完整命令行参数
+            cmd_args = " ".join(sys.argv)
+            cmd_args_safe = re.sub(r'[/\\:*?"<>|\s]+', '_', cmd_args)
+            suffix = cmd_args_safe
+
         # 限制长度，避免文件名过长
-        if len(cmd_args_safe) > 100:
-            cmd_args_safe = cmd_args_safe[:100]
+        if len(suffix) > 100:
+            suffix = suffix[:100]
 
         if if_train:
-            log_file = os.path.join(save_dir, f"train_log_{timestamp}_{cmd_args_safe}.txt")
+            log_file = os.path.join(save_dir, f"train_log_{timestamp}_{suffix}.txt")
         else:
-            log_file = os.path.join(save_dir, f"test_log_{timestamp}_{cmd_args_safe}.txt")
+            log_file = os.path.join(save_dir, f"test_log_{timestamp}_{suffix}.txt")
 
         fh = logging.FileHandler(log_file, mode='w')
         fh.setLevel(logging.DEBUG)

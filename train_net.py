@@ -30,6 +30,7 @@ if __name__ == '__main__':
         "--config_file", default="", help="path to config file", type=str
     )
     parser.add_argument("--fea_cft", default=0, help="Feature choose to be tested", type=int)
+    parser.add_argument("--exp_name", default=None, help="Experiment name for log file", type=str)
     parser.add_argument("opts", help="Modify config options using the command-line", default=None,
                         nargs=argparse.REMAINDER)
     parser.add_argument("--local_rank", default=0, type=int)
@@ -50,7 +51,7 @@ if __name__ == '__main__':
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    logger = setup_logger("DeMo", output_dir, if_train=True)
+    logger = setup_logger("DeMo", output_dir, if_train=True, exp_name=args.exp_name)
     logger.info("Saving model in the path :{}".format(cfg.OUTPUT_DIR))
     logger.info(args)
 
