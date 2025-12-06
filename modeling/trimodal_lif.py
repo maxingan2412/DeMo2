@@ -127,9 +127,10 @@ class TrimodalLIF(nn.Module):
 
     def __init__(self, beta: float = 0.4, mid_channels: int = 64):
         super().__init__()
+        # 注意：RGBNT201 数据集中 NIR 和 TIR 也是 3 通道（复制的）
         self.rgb_predictor = QualityPredictor(in_channels=3, mid_channels=mid_channels)
-        self.nir_predictor = QualityPredictor(in_channels=1, mid_channels=mid_channels)
-        self.tir_predictor = QualityPredictor(in_channels=1, mid_channels=mid_channels)
+        self.nir_predictor = QualityPredictor(in_channels=3, mid_channels=mid_channels)  # 3→3
+        self.tir_predictor = QualityPredictor(in_channels=3, mid_channels=mid_channels)  # 3→3
 
         self.fusion_p3 = TrimodalLIFAdd(layer=3, beta=beta)
         self.fusion_p4 = TrimodalLIFAdd(layer=4, beta=beta)
