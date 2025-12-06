@@ -65,22 +65,40 @@ def do_train(cfg,
             with amp.autocast(enabled=True):
                 output = model(img, label=target, cam_label=target_cam, view_label=target_view)
                 loss = 0
+                lif_loss = None
+
+                # 检查是否有LIF损失在输出中
+                has_lif = cfg.MODEL.USE_LIF
+                has_moe = cfg.MODEL.HDM or cfg.MODEL.ATM
+                has_sdtps = cfg.MODEL.USE_SDTPS
+
+                if has_lif:
+                    # 当启用LIF时，损失总是在最后
+                    lif_loss = output[-1]
+                    output = output[:-1]
+
                 if len(output) % 2 == 1:
+                    # 奇数个输出（去掉lif_loss后）：最后一个是损失
                     index = len(output) - 1
                     for i in range(0, index, 2):
                         loss_tmp = loss_fn(score=output[i], feat=output[i + 1], target=target, target_cam=target_cam)
                         # SDTPS 分支使用更大的权重
-                        if cfg.MODEL.USE_SDTPS and i == 0:
+                        if has_sdtps and i == 0:
                             loss_tmp = loss_tmp * cfg.MODEL.SDTPS_LOSS_WEIGHT
                         loss = loss + loss_tmp
                     loss = loss + output[-1]
                 else:
+                    # 偶数个输出：都是score-feat对
                     for i in range(0, len(output), 2):
                         loss_tmp = loss_fn(score=output[i], feat=output[i + 1], target=target, target_cam=target_cam)
-                        # SDTPS 分支使用更大的权重（假设 sdtps 在前两个输出）
-                        if cfg.MODEL.USE_SDTPS and i == 0:
+                        # SDTPS 分支使用更大的权重
+                        if has_sdtps and i == 0:
                             loss_tmp = loss_tmp * cfg.MODEL.SDTPS_LOSS_WEIGHT
                         loss = loss + loss_tmp
+
+                # 添加LIF损失（如果存在）
+                if lif_loss is not None:
+                    loss = loss + cfg.MODEL.LIF_LOSS_WEIGHT * lif_loss
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
@@ -90,8 +108,8 @@ def do_train(cfg,
                     param.grad.data *= (1. / cfg.SOLVER.CENTER_LOSS_WEIGHT)
                 scaler.step(optimizer_center)
                 scaler.update()
-            if isinstance(output, list):
-                acc = (output[0][0].max(1)[1] == target).float().mean()
+            if isinstance(output, list) or isinstance(output, tuple):
+                acc = (output[0].max(1)[1] == target).float().mean()
             else:
                 acc = (output[0].max(1)[1] == target).float().mean()
 

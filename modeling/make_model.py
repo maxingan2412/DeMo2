@@ -9,6 +9,7 @@ from modeling.meta_arch import build_transformer, weights_init_classifier, weigh
 from modeling.moe.AttnMOE import GeneralFusion, QuickGELU
 from modeling.sdtps_complete import MultiModalSDTPS
 from modeling.sacr import SACR
+from modeling.trimodal_lif import TrimodalLIF, TrimodalLIFLoss
 import torch
 
 
@@ -37,6 +38,7 @@ class DeMo(nn.Module):
         self.USE_SDTPS = cfg.MODEL.USE_SDTPS
         self.GLOBAL_LOCAL = cfg.MODEL.GLOBAL_LOCAL
         self.head = cfg.MODEL.HEAD
+        self.USE_LIF = cfg.MODEL.USE_LIF
         if self.GLOBAL_LOCAL:
             self.pool = nn.AdaptiveAvgPool1d(1)
             self.rgb_reduce = nn.Sequential(nn.LayerNorm(2 * self.feat_dim),
@@ -61,6 +63,11 @@ class DeMo(nn.Module):
                 width=patch_w,
                 dilation_rates=cfg.MODEL.SACR_DILATION_RATES,
             )
+
+        # Trimodal-LIF: Quality-aware multi-modal fusion
+        if self.USE_LIF:
+            self.lif = TrimodalLIF(beta=cfg.MODEL.LIF_BETA)
+            self.lif_loss = TrimodalLIFLoss()
 
         if self.HDM or self.ATM:
             self.generalFusion = GeneralFusion(feat_dim=self.feat_dim, num_experts=7, head=self.head, reg_weight=0,
@@ -166,6 +173,20 @@ class DeMo(nn.Module):
                 NI_cash = self.sacr(NI_cash)    # (B, N, C) → (B, N, C)
                 TI_cash = self.sacr(TI_cash)    # (B, N, C) → (B, N, C)
 
+            # Trimodal-LIF: Quality-aware multi-modal fusion (only during training)
+            # Note: LIF computes quality loss for self-supervised learning
+            lif_loss = None
+            if self.USE_LIF:
+                # LIF 计算质量感知的融合
+                # LIF uses predict_quality to compute quality maps from images
+                q_rgb, q_nir, q_tir = self.lif.predict_quality(RGB, NI, TI)
+                # 计算 LIF 损失（自监督）
+                lif_loss = self.lif_loss(q_rgb, q_nir, q_tir, RGB, NI, TI)['total']
+                # Note: We don't apply LIF fusion to features in this integration
+                # as it requires early-stage feature maps. In a full implementation,
+                # LIF could be applied at intermediate backbone layers.
+                # For now, LIF serves as an auxiliary self-supervised loss.
+
             # SDTPS 分支：使用 token selection 替代 HDM+ATM
             if self.USE_SDTPS:
                 # SDTPS token selection and enhancement
@@ -193,20 +214,46 @@ class DeMo(nn.Module):
                 RGB_ori_score = self.classifier_r(self.bottleneck_r(RGB_global))
                 NI_ori_score = self.classifier_n(self.bottleneck_n(NI_global))
                 TI_ori_score = self.classifier_t(self.bottleneck_t(TI_global))
+
+            # 构造返回值，可能包含 LIF 损失
             if self.direct:
                 if self.USE_SDTPS:
                     # SDTPS 分支：返回 SDTPS 特征和原始特征
-                    return sdtps_score, sdtps_feat, ori_score, ori
+                    if self.HDM or self.ATM:
+                        result = (sdtps_score, sdtps_feat, ori_score, ori, loss_moe)
+                        if self.USE_LIF and lif_loss is not None:
+                            result = result + (lif_loss,)
+                    else:
+                        result = (sdtps_score, sdtps_feat, ori_score, ori)
+                        if self.USE_LIF and lif_loss is not None:
+                            result = result + (lif_loss,)
+                    return result
                 elif self.HDM or self.ATM:
-                    return moe_score, moe_feat, ori_score, ori, loss_moe
-                return ori_score, ori
+                    result = (moe_score, moe_feat, ori_score, ori, loss_moe)
+                    if self.USE_LIF and lif_loss is not None:
+                        result = result + (lif_loss,)
+                    return result
+                else:
+                    if self.USE_LIF and lif_loss is not None:
+                        return (ori_score, ori, lif_loss)
+                    return (ori_score, ori)
             else:
                 if self.USE_SDTPS:
                     # SDTPS 分支（非direct模式）
-                    return sdtps_score, sdtps_feat, RGB_ori_score, RGB_global, NI_ori_score, NI_global, TI_ori_score, TI_global
+                    result = (sdtps_score, sdtps_feat, RGB_ori_score, RGB_global, NI_ori_score, NI_global, TI_ori_score, TI_global)
+                    if self.USE_LIF and lif_loss is not None:
+                        result = result + (lif_loss,)
+                    return result
                 elif self.HDM or self.ATM:
-                    return moe_score, moe_feat, RGB_ori_score, RGB_global, NI_ori_score, NI_global, TI_ori_score, TI_global, loss_moe
-                return RGB_ori_score, RGB_global, NI_ori_score, NI_global, TI_ori_score, TI_global
+                    result = (moe_score, moe_feat, RGB_ori_score, RGB_global, NI_ori_score, NI_global, TI_ori_score, TI_global, loss_moe)
+                    if self.USE_LIF and lif_loss is not None:
+                        result = result + (lif_loss,)
+                    return result
+                else:
+                    result = (RGB_ori_score, RGB_global, NI_ori_score, NI_global, TI_ori_score, TI_global)
+                    if self.USE_LIF and lif_loss is not None:
+                        result = result + (lif_loss,)
+                    return result
 
         else:
             RGB = x['RGB']

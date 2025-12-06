@@ -35,7 +35,7 @@ _C.MODEL.HDM = False # whether to use HDM in DeMo
 _C.MODEL.ATM = False # whether to use ATM in DeMo
 # SACR: Scale-Adaptive Contextual Refinement
 _C.MODEL.USE_SACR = False # whether to use SACR before SDTPS
-_C.MODEL.SACR_DILATION_RATES = [6, 12, 18] # dilation rates for atrous convolutions
+_C.MODEL.SACR_DILATION_RATES = [2, 3, 4] # dilation rates (adjusted for 16×8 feature maps)
 # SDTPS: Sparse and Dense Token-Aware Patch Selection
 _C.MODEL.USE_SDTPS = False # whether to use SDTPS (replaces HDM+ATM)
 _C.MODEL.SDTPS_SPARSE_RATIO = 0.5 # token selection ratio (same as paper)
@@ -44,6 +44,11 @@ _C.MODEL.SDTPS_BETA = 0.25 # score combination weight parameter
 _C.MODEL.SDTPS_USE_GUMBEL = False # whether to use Gumbel-Softmax
 _C.MODEL.SDTPS_GUMBEL_TAU = 1.0 # Gumbel temperature
 _C.MODEL.SDTPS_LOSS_WEIGHT = 2.0 # loss weight for SDTPS branch (vs ori=1.0)
+# Trimodal-LIF: Quality-aware multi-modal fusion (M2D-LIF framework)
+_C.MODEL.USE_LIF = False # whether to use Trimodal-LIF for quality-aware fusion
+_C.MODEL.LIF_BETA = 0.4 # fusion weight temperature for LIF
+_C.MODEL.LIF_LOSS_WEIGHT = 0.1 # LIF loss weight (auxiliary loss)
+_C.MODEL.LIF_LAYER = 3 # which layer to apply LIF (3, 4, or 5)
 # If train with label smooth, options: 'on', 'off'
 _C.MODEL.IF_LABELSMOOTH = 'on'
 # If train with the contact feature

@@ -1,0 +1,69 @@
+MODEL:
+  TRANSFORMER_TYPE: 'ViT-B-16'
+  STRIDE_SIZE: [ 16, 16 ]
+  SIE_CAMERA: True
+  DIRECT: 1
+  SIE_COE: 1.0
+  ID_LOSS_WEIGHT: 0.25
+  TRIPLET_LOSS_WEIGHT: 1.0
+  GLOBAL_LOCAL: True
+  # Disable HDM and ATM, enable SACR + SDTPS + LIF
+  HDM: False
+  ATM: False
+  # SACR configuration
+  USE_SACR: True                     # Enable SACR (multi-scale context refinement)
+  SACR_DILATION_RATES: [6, 12, 18]   # Atrous convolution dilation rates
+  # SDTPS configuration
+  USE_SDTPS: True                    # Enable SDTPS (Token selection)
+  SDTPS_SPARSE_RATIO: 0.7           # Selection ratio
+  SDTPS_AGGR_RATIO: 0.5            # Aggregation ratio
+  SDTPS_BETA: 0.25                   # Score combination weight
+  SDTPS_USE_GUMBEL: False            # Disable Gumbel (numerical instability)
+  SDTPS_GUMBEL_TAU: 5.0              # Gumbel temperature
+  SDTPS_LOSS_WEIGHT: 2.0             # SDTPS branch loss weight
+  # Trimodal-LIF configuration
+  USE_LIF: True                 # Enable Trimodal-LIF for quality-aware fusion
+  LIF_BETA: 0.4                 # Fusion weight temperature
+  LIF_LOSS_WEIGHT: 0.1          # LIF auxiliary loss weight
+  LIF_LAYER: 3                  # Layer index for LIF (3, 4, or 5)
+  HEAD: 4
+
+INPUT:
+  SIZE_TRAIN: [ 256, 128 ]
+  SIZE_TEST: [ 256, 128 ]
+  PROB: 0.5 # random horizontal flip
+  RE_PROB: 0.5 # random erasing
+  PADDING: 10
+
+DATALOADER:
+  SAMPLER: 'softmax_triplet'
+  NUM_INSTANCE: 8
+  NUM_WORKERS: 14
+
+DATASETS:
+  NAMES: ('RGBNT201')
+  ROOT_DIR: '..'
+
+SOLVER:
+  BASE_LR: 0.00035
+  WARMUP_ITERS: 10
+  MAX_EPOCHS: 50
+  OPTIMIZER_NAME: 'Adam'
+  IMS_PER_BATCH: 64
+  EVAL_PERIOD: 1
+
+TEST:
+  IMS_PER_BATCH: 128
+  RE_RANKING: 'no'
+  WEIGHT: ''
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+  MISS: "nothing"
+
+OUTPUT_DIR: '..'
+
+# Notes:
+# Complete pipeline: Backbone → SACR → SDTPS → LIF
+# SACR: Expands receptive field with multi-scale context
+# SDTPS: Cross-modal guided token selection and aggregation
+# LIF: Quality-aware fusion with self-supervised loss
