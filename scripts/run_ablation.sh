@@ -12,7 +12,7 @@ CONFIG_BASE="configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
 # Create experiment folder
-EXP_DIR="logs/RGBNT201_ablation_SDTPS_DGAF_${TIMESTAMP}"
+EXP_DIR="logs/RGBNT201_ablation_SDTPS_DGAF_normalsetting_${TIMESTAMP}"
 mkdir -p ${EXP_DIR}
 
 echo "=============================================="
