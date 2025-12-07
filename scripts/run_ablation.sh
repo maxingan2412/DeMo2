@@ -2,11 +2,11 @@
 # Ablation Experiments: Testing SDTPS and DGAF effectiveness
 # Run 4 experiments on GPUs 0-3 in parallel
 #
-# Base config: DeMo_MultiModalSACR_SDTPS_DGAF.yml
-# Only modify SDTPS and DGAF related parameters
+# Base config: DeMo_SDTPS_DGAF_ablation.yml (SACR disabled)
+# Training settings: lr=0.00035, epochs=50, warmup=10, TF32 enabled
 
 # Base config file
-CONFIG_BASE="configs/RGBNT201/DeMo_MultiModalSACR_SDTPS_DGAF.yml"
+CONFIG_BASE="configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml"
 
 # Get timestamp for folder name
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -27,11 +27,10 @@ echo "GPU 2: DGAF V3 only"
 echo "GPU 3: SDTPS + DGAF V3"
 echo "=============================================="
 
-# Experiment 1: Baseline on GPU 0 (no SDTPS, no DGAF, no SACR)
+# Experiment 1: Baseline on GPU 0 (no SDTPS, no DGAF)
 echo "[Experiment 1] Baseline"
 CUDA_VISIBLE_DEVICES=0 nohup python train_net.py --config_file ${CONFIG_BASE} \
     --exp_name "ablation_baseline" \
-    MODEL.USE_MULTIMODAL_SACR False \
     MODEL.USE_SDTPS False \
     MODEL.USE_DGAF False \
     > ${EXP_DIR}/baseline.log 2>&1 &
@@ -41,12 +40,7 @@ echo "Started on GPU 0, PID: $!"
 echo "[Experiment 2] SDTPS only"
 CUDA_VISIBLE_DEVICES=1 nohup python train_net.py --config_file ${CONFIG_BASE} \
     --exp_name "ablation_SDTPS_only" \
-    MODEL.USE_MULTIMODAL_SACR False \
     MODEL.USE_SDTPS True \
-    MODEL.SDTPS_SPARSE_RATIO 0.7 \
-    MODEL.SDTPS_AGGR_RATIO 0.5 \
-    MODEL.SDTPS_BETA 0.25 \
-    MODEL.SDTPS_LOSS_WEIGHT 2.0 \
     MODEL.USE_DGAF False \
     > ${EXP_DIR}/SDTPS_only.log 2>&1 &
 echo "Started on GPU 1, PID: $!"
@@ -55,13 +49,8 @@ echo "Started on GPU 1, PID: $!"
 echo "[Experiment 3] DGAF V3 only"
 CUDA_VISIBLE_DEVICES=2 nohup python train_net.py --config_file ${CONFIG_BASE} \
     --exp_name "ablation_DGAFv3_only" \
-    MODEL.USE_MULTIMODAL_SACR False \
     MODEL.USE_SDTPS False \
     MODEL.USE_DGAF True \
-    MODEL.DGAF_VERSION v3 \
-    MODEL.DGAF_TAU 1.0 \
-    MODEL.DGAF_INIT_ALPHA 0.5 \
-    MODEL.DGAF_NUM_HEADS 8 \
     > ${EXP_DIR}/DGAFv3_only.log 2>&1 &
 echo "Started on GPU 2, PID: $!"
 
@@ -69,17 +58,8 @@ echo "Started on GPU 2, PID: $!"
 echo "[Experiment 4] SDTPS + DGAF V3"
 CUDA_VISIBLE_DEVICES=3 nohup python train_net.py --config_file ${CONFIG_BASE} \
     --exp_name "ablation_SDTPS_DGAFv3" \
-    MODEL.USE_MULTIMODAL_SACR False \
     MODEL.USE_SDTPS True \
-    MODEL.SDTPS_SPARSE_RATIO 0.7 \
-    MODEL.SDTPS_AGGR_RATIO 0.5 \
-    MODEL.SDTPS_BETA 0.25 \
-    MODEL.SDTPS_LOSS_WEIGHT 2.0 \
     MODEL.USE_DGAF True \
-    MODEL.DGAF_VERSION v3 \
-    MODEL.DGAF_TAU 1.0 \
-    MODEL.DGAF_INIT_ALPHA 0.5 \
-    MODEL.DGAF_NUM_HEADS 8 \
     > ${EXP_DIR}/SDTPS_DGAFv3.log 2>&1 &
 echo "Started on GPU 3, PID: $!"
 

@@ -22,10 +22,10 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = True
 
-    # 禁用 TF32 以确保数值精度一致性
-    # A100 默认启用 TF32，会降低精度（23位尾数→10位），导致与 3090 结果不同
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
+    # 启用 TF32 以提高 A100 等 Ampere 架构 GPU 的训练速度
+    # TF32 使用 10 位尾数（vs FP32 的 23 位），对训练影响很小
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
 
 
 if __name__ == '__main__':
