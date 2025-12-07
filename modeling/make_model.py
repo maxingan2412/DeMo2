@@ -156,6 +156,15 @@ class DeMo(nn.Module):
             self.bottleneck_sdtps = nn.BatchNorm1d(3 * self.feat_dim)
             self.bottleneck_sdtps.bias.requires_grad_(False)
             self.bottleneck_sdtps.apply(weights_init_kaiming)
+
+        # 单独使用 DGAF（不依赖 SDTPS）：DGAF V3 直接处理 backbone 的 patch tokens
+        if self.USE_DGAF and not self.USE_SDTPS:
+            self.classifier_dgaf = nn.Linear(3 * self.feat_dim, self.num_classes, bias=False)
+            self.classifier_dgaf.apply(weights_init_classifier)
+            self.bottleneck_dgaf = nn.BatchNorm1d(3 * self.feat_dim)
+            self.bottleneck_dgaf.bias.requires_grad_(False)
+            self.bottleneck_dgaf.apply(weights_init_kaiming)
+
         if self.direct:
             self.classifier = nn.Linear(3 * self.feat_dim, self.num_classes, bias=False)
             self.classifier.apply(weights_init_classifier)
@@ -298,6 +307,12 @@ class DeMo(nn.Module):
 
                 sdtps_score = self.classifier_sdtps(self.bottleneck_sdtps(sdtps_feat))
 
+            # 单独使用 DGAF V3（不依赖 SDTPS）：直接处理 backbone 的 patch tokens
+            elif self.USE_DGAF:
+                # DGAF V3 直接接受 patch tokens (B, N, C)
+                dgaf_feat = self.dgaf(RGB_cash, NI_cash, TI_cash)  # (B, 3C)
+                dgaf_score = self.classifier_dgaf(self.bottleneck_dgaf(dgaf_feat))
+
             if self.HDM or self.ATM:
                 moe_feat, loss_moe = self.generalFusion(RGB_cash, NI_cash, TI_cash, RGB_global, NI_global, TI_global)
                 moe_score = self.classifier_moe(self.bottleneck_moe(moe_feat))
@@ -323,6 +338,12 @@ class DeMo(nn.Module):
                         if self.USE_LIF and lif_loss is not None:
                             result = result + (lif_loss,)
                     return result
+                elif self.USE_DGAF:
+                    # 单独 DGAF 分支：返回 DGAF 特征和原始特征（与 SDTPS 格式一致）
+                    result = (dgaf_score, dgaf_feat, ori_score, ori)
+                    if self.USE_LIF and lif_loss is not None:
+                        result = result + (lif_loss,)
+                    return result
                 elif self.HDM or self.ATM:
                     result = (moe_score, moe_feat, ori_score, ori, loss_moe)
                     if self.USE_LIF and lif_loss is not None:
@@ -336,6 +357,12 @@ class DeMo(nn.Module):
                 if self.USE_SDTPS:
                     # SDTPS 分支（非direct模式）
                     result = (sdtps_score, sdtps_feat, RGB_ori_score, RGB_global, NI_ori_score, NI_global, TI_ori_score, TI_global)
+                    if self.USE_LIF and lif_loss is not None:
+                        result = result + (lif_loss,)
+                    return result
+                elif self.USE_DGAF:
+                    # 单独 DGAF 分支（非direct模式）
+                    result = (dgaf_score, dgaf_feat, RGB_ori_score, RGB_global, NI_ori_score, NI_global, TI_ori_score, TI_global)
                     if self.USE_LIF and lif_loss is not None:
                         result = result + (lif_loss,)
                     return result
@@ -452,6 +479,17 @@ class DeMo(nn.Module):
                     return sdtps_feat
                 elif return_pattern == 3:
                     return torch.cat([ori, sdtps_feat], dim=-1)
+
+            # 单独使用 DGAF V3（不依赖 SDTPS）：直接处理 backbone 的 patch tokens
+            elif self.USE_DGAF:
+                # DGAF V3 直接接受 patch tokens (B, N, C)
+                dgaf_feat = self.dgaf(RGB_cash, NI_cash, TI_cash)  # (B, 3C)
+                if return_pattern == 1:
+                    return ori
+                elif return_pattern == 2:
+                    return dgaf_feat
+                elif return_pattern == 3:
+                    return torch.cat([ori, dgaf_feat], dim=-1)
 
             if self.HDM or self.ATM:
                 moe_feat = self.generalFusion(RGB_cash, NI_cash, TI_cash, RGB_global, NI_global, TI_global)
