@@ -1,11 +1,7 @@
 #!/bin/bash
 # Ablation Experiments for Vehicle Re-ID: RGBNT100 and MSVR310
-# Run 8 experiments on GPUs 0-3 in parallel
-# Each GPU runs 2 experiments sequentially (RGBNT100 first, then MSVR310)
-#
-# RGBNT100: lr=0.00035, epochs=30, warmup=5
-# MSVR310:  lr=0.00035, epochs=50, warmup=10
-# TF32 enabled, Cosine scheduler
+# Phase 1: 4 GPUs run RGBNT100 in parallel
+# Phase 2: 4 GPUs run MSVR310 in parallel (after Phase 1 completes)
 
 # Config files
 CONFIG_RGBNT100="configs/RGBNT100/DeMo_SDTPS_DGAF_ablation.yml"
@@ -21,107 +17,82 @@ mkdir -p ${EXP_DIR_100}
 mkdir -p ${EXP_DIR_310}
 
 echo "=============================================="
-echo "Starting Vehicle Re-ID Ablation Experiments"
+echo "Vehicle Re-ID Ablation Experiments"
 echo "=============================================="
-echo "RGBNT100 config: ${CONFIG_RGBNT100}"
-echo "MSVR310 config:  ${CONFIG_MSVR310}"
-echo ""
 echo "RGBNT100 logs: ${EXP_DIR_100}"
 echo "MSVR310 logs:  ${EXP_DIR_310}"
-echo ""
-echo "GPU 0: Baseline (RGBNT100 -> MSVR310)"
-echo "GPU 1: SDTPS only (RGBNT100 -> MSVR310)"
-echo "GPU 2: DGAF V3 only (RGBNT100 -> MSVR310)"
-echo "GPU 3: SDTPS + DGAF V3 (RGBNT100 -> MSVR310)"
 echo "=============================================="
 
 # ============================================================================
-# GPU 0: Baseline experiments (no SDTPS, no DGAF)
+# Phase 1: RGBNT100 (4 GPUs in parallel)
 # ============================================================================
-echo "[GPU 0] Starting Baseline experiments..."
-CUDA_VISIBLE_DEVICES=0 nohup bash -c "
-    python train_net.py --config_file ${CONFIG_RGBNT100} \
-        --exp_name 'ablation_baseline' \
-        MODEL.USE_SDTPS False \
-        MODEL.USE_DGAF False \
-        > ${EXP_DIR_100}/baseline.log 2>&1 && \
-    python train_net.py --config_file ${CONFIG_MSVR310} \
-        --exp_name 'ablation_baseline' \
-        MODEL.USE_SDTPS False \
-        MODEL.USE_DGAF False \
-        > ${EXP_DIR_310}/baseline.log 2>&1
-" > /dev/null 2>&1 &
-echo "Started on GPU 0, PID: $!"
+echo ""
+echo "[Phase 1] Starting RGBNT100 experiments on 4 GPUs..."
+
+CUDA_VISIBLE_DEVICES=0 nohup python train_net.py --config_file ${CONFIG_RGBNT100} \
+    --exp_name "ablation_baseline" \
+    MODEL.USE_SDTPS False MODEL.USE_DGAF False \
+    > ${EXP_DIR_100}/baseline.log 2>&1 &
+echo "  GPU 0: Baseline, PID: $!"
+
+CUDA_VISIBLE_DEVICES=1 nohup python train_net.py --config_file ${CONFIG_RGBNT100} \
+    --exp_name "ablation_SDTPS_only" \
+    MODEL.USE_SDTPS True MODEL.USE_DGAF False \
+    > ${EXP_DIR_100}/SDTPS_only.log 2>&1 &
+echo "  GPU 1: SDTPS only, PID: $!"
+
+CUDA_VISIBLE_DEVICES=2 nohup python train_net.py --config_file ${CONFIG_RGBNT100} \
+    --exp_name "ablation_DGAFv3_only" \
+    MODEL.USE_SDTPS False MODEL.USE_DGAF True \
+    > ${EXP_DIR_100}/DGAFv3_only.log 2>&1 &
+echo "  GPU 2: DGAF V3 only, PID: $!"
+
+CUDA_VISIBLE_DEVICES=3 nohup python train_net.py --config_file ${CONFIG_RGBNT100} \
+    --exp_name "ablation_SDTPS_DGAFv3" \
+    MODEL.USE_SDTPS True MODEL.USE_DGAF True \
+    > ${EXP_DIR_100}/SDTPS_DGAFv3.log 2>&1 &
+echo "  GPU 3: SDTPS + DGAF V3, PID: $!"
+
+echo ""
+echo "Waiting for RGBNT100 to complete..."
+wait
+echo "RGBNT100 completed!"
 
 # ============================================================================
-# GPU 1: SDTPS only experiments
+# Phase 2: MSVR310 (4 GPUs in parallel)
 # ============================================================================
-echo "[GPU 1] Starting SDTPS only experiments..."
-CUDA_VISIBLE_DEVICES=1 nohup bash -c "
-    python train_net.py --config_file ${CONFIG_RGBNT100} \
-        --exp_name 'ablation_SDTPS_only' \
-        MODEL.USE_SDTPS True \
-        MODEL.USE_DGAF False \
-        > ${EXP_DIR_100}/SDTPS_only.log 2>&1 && \
-    python train_net.py --config_file ${CONFIG_MSVR310} \
-        --exp_name 'ablation_SDTPS_only' \
-        MODEL.USE_SDTPS True \
-        MODEL.USE_DGAF False \
-        > ${EXP_DIR_310}/SDTPS_only.log 2>&1
-" > /dev/null 2>&1 &
-echo "Started on GPU 1, PID: $!"
+echo ""
+echo "[Phase 2] Starting MSVR310 experiments on 4 GPUs..."
 
-# ============================================================================
-# GPU 2: DGAF V3 only experiments
-# ============================================================================
-echo "[GPU 2] Starting DGAF V3 only experiments..."
-CUDA_VISIBLE_DEVICES=2 nohup bash -c "
-    python train_net.py --config_file ${CONFIG_RGBNT100} \
-        --exp_name 'ablation_DGAFv3_only' \
-        MODEL.USE_SDTPS False \
-        MODEL.USE_DGAF True \
-        > ${EXP_DIR_100}/DGAFv3_only.log 2>&1 && \
-    python train_net.py --config_file ${CONFIG_MSVR310} \
-        --exp_name 'ablation_DGAFv3_only' \
-        MODEL.USE_SDTPS False \
-        MODEL.USE_DGAF True \
-        > ${EXP_DIR_310}/DGAFv3_only.log 2>&1
-" > /dev/null 2>&1 &
-echo "Started on GPU 2, PID: $!"
+CUDA_VISIBLE_DEVICES=0 nohup python train_net.py --config_file ${CONFIG_MSVR310} \
+    --exp_name "ablation_baseline" \
+    MODEL.USE_SDTPS False MODEL.USE_DGAF False \
+    > ${EXP_DIR_310}/baseline.log 2>&1 &
+echo "  GPU 0: Baseline, PID: $!"
 
-# ============================================================================
-# GPU 3: SDTPS + DGAF V3 experiments
-# ============================================================================
-echo "[GPU 3] Starting SDTPS + DGAF V3 experiments..."
-CUDA_VISIBLE_DEVICES=3 nohup bash -c "
-    python train_net.py --config_file ${CONFIG_RGBNT100} \
-        --exp_name 'ablation_SDTPS_DGAFv3' \
-        MODEL.USE_SDTPS True \
-        MODEL.USE_DGAF True \
-        > ${EXP_DIR_100}/SDTPS_DGAFv3.log 2>&1 && \
-    python train_net.py --config_file ${CONFIG_MSVR310} \
-        --exp_name 'ablation_SDTPS_DGAFv3' \
-        MODEL.USE_SDTPS True \
-        MODEL.USE_DGAF True \
-        > ${EXP_DIR_310}/SDTPS_DGAFv3.log 2>&1
-" > /dev/null 2>&1 &
-echo "Started on GPU 3, PID: $!"
+CUDA_VISIBLE_DEVICES=1 nohup python train_net.py --config_file ${CONFIG_MSVR310} \
+    --exp_name "ablation_SDTPS_only" \
+    MODEL.USE_SDTPS True MODEL.USE_DGAF False \
+    > ${EXP_DIR_310}/SDTPS_only.log 2>&1 &
+echo "  GPU 1: SDTPS only, PID: $!"
+
+CUDA_VISIBLE_DEVICES=2 nohup python train_net.py --config_file ${CONFIG_MSVR310} \
+    --exp_name "ablation_DGAFv3_only" \
+    MODEL.USE_SDTPS False MODEL.USE_DGAF True \
+    > ${EXP_DIR_310}/DGAFv3_only.log 2>&1 &
+echo "  GPU 2: DGAF V3 only, PID: $!"
+
+CUDA_VISIBLE_DEVICES=3 nohup python train_net.py --config_file ${CONFIG_MSVR310} \
+    --exp_name "ablation_SDTPS_DGAFv3" \
+    MODEL.USE_SDTPS True MODEL.USE_DGAF True \
+    > ${EXP_DIR_310}/SDTPS_DGAFv3.log 2>&1 &
+echo "  GPU 3: SDTPS + DGAF V3, PID: $!"
+
+echo ""
+echo "Waiting for MSVR310 to complete..."
+wait
 
 echo ""
 echo "=============================================="
-echo "All 8 experiments started! (4 GPUs in parallel)"
+echo "All experiments completed!"
 echo "=============================================="
-echo ""
-echo "Monitor RGBNT100 progress:"
-echo "  tail -f ${EXP_DIR_100}/baseline.log"
-echo "  tail -f ${EXP_DIR_100}/SDTPS_only.log"
-echo "  tail -f ${EXP_DIR_100}/DGAFv3_only.log"
-echo "  tail -f ${EXP_DIR_100}/SDTPS_DGAFv3.log"
-echo ""
-echo "Monitor MSVR310 progress (starts after RGBNT100 finishes on each GPU):"
-echo "  tail -f ${EXP_DIR_310}/baseline.log"
-echo "  tail -f ${EXP_DIR_310}/SDTPS_only.log"
-echo "  tail -f ${EXP_DIR_310}/DGAFv3_only.log"
-echo "  tail -f ${EXP_DIR_310}/SDTPS_DGAFv3.log"
-echo ""
-echo "Check GPU usage: watch -n 1 nvidia-smi"
