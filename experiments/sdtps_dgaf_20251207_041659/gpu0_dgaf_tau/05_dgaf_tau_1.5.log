@@ -1,0 +1,2760 @@
+2025-12-07 09:59:15,923 DeMo INFO: Saving model in the path :..
+2025-12-07 09:59:15,923 DeMo INFO: Namespace(config_file='configs/RGBNT201/DeMo_DGAF.yml', exp_name='dgaf_tau_1.5', fea_cft=0, local_rank=0, opts=['MODEL.USE_DGAF', 'True', 'MODEL.DGAF_TAU', '1.5'])
+2025-12-07 09:59:15,924 DeMo INFO: Loaded configuration file configs/RGBNT201/DeMo_DGAF.yml
+2025-12-07 09:59:15,930 DeMo INFO: 
+# ============================================================================
+# DeMo + DGAF (Dual-Gated Adaptive Fusion) 配置
+# 基于 AGFN 论文：Beyond Simple Fusion: Adaptive Gated Fusion
+# ============================================================================
+# 架构流程：
+#   Backbone → SDTPS (token selection) → DGAF (自适应融合) → Classifier
+#
+# DGAF 位置：在 SDTPS 输出之后，替代简单的 concat
+#   原始：sdtps_feat = concat([RGB_sdtps, NI_sdtps, TI_sdtps])
+#   新版：sdtps_feat = DGAF(RGB_sdtps, NI_sdtps, TI_sdtps)
+#
+# DGAF 核心机制：
+#   1. IEG (信息熵门控): 低熵=高确定性=高权重
+#   2. MIG (模态重要性门控): 学习样本级别的模态重要性
+#   3. 可学习 α 自适应平衡两个门控
+# ============================================================================
+
+MODEL:
+  TRANSFORMER_TYPE: 'ViT-B-16'
+  STRIDE_SIZE: [ 16, 16 ]
+  SIE_CAMERA: True
+  DIRECT: 1
+  SIE_COE: 1.0
+  ID_LOSS_WEIGHT: 0.25
+  TRIPLET_LOSS_WEIGHT: 1.0
+  GLOBAL_LOCAL: True
+
+  # 禁用 HDM/ATM
+  HDM: False
+  ATM: False
+
+  # ========== 模块开关 ==========
+  USE_SACR: False                    # 禁用 SACR
+  USE_LIF: False                     # 禁用 LIF
+  USE_SDTPS: True                    # 启用 SDTPS（核心模块）
+  USE_DGAF: True                     # 启用 DGAF（替代 concat）
+
+  # ========== DGAF 参数 ==========
+  DGAF_TAU: 1.0                      # 熵门控温度（越小越尖锐）
+  DGAF_INIT_ALPHA: 0.5               # α 初始值（0.5 = IEG 和 MIG 平衡）
+
+  # ========== SDTPS 参数 ==========
+  SDTPS_SPARSE_RATIO: 0.7            # Token 保留比例
+  SDTPS_AGGR_RATIO: 0.5              # 聚合比例
+  SDTPS_BETA: 0.25                   # Score 组合权重
+  SDTPS_USE_GUMBEL: False            # 禁用 Gumbel
+  SDTPS_GUMBEL_TAU: 5.0              # Gumbel 温度
+  SDTPS_LOSS_WEIGHT: 1.0             # SDTPS 损失权重（实验最优）
+
+  # SACR 和 LIF 参数（已禁用）
+  SACR_DILATION_RATES: [2, 3, 4]
+  LIF_BETA: 0.4
+  LIF_LOSS_WEIGHT: 0.2
+  LIF_LAYER: 3
+
+  HEAD: 4
+
+INPUT:
+  SIZE_TRAIN: [ 256, 128 ]
+  SIZE_TEST: [ 256, 128 ]
+  PROB: 0.5
+  RE_PROB: 0.5
+  PADDING: 10
+
+DATALOADER:
+  SAMPLER: 'softmax_triplet'
+  NUM_INSTANCE: 8
+  NUM_WORKERS: 14
+
+DATASETS:
+  NAMES: ('RGBNT201')
+  ROOT_DIR: '..'
+
+SOLVER:
+  BASE_LR: 0.00035
+  WARMUP_ITERS: 10
+  MAX_EPOCHS: 50
+  OPTIMIZER_NAME: 'Adam'
+  IMS_PER_BATCH: 64
+  EVAL_PERIOD: 1
+
+TEST:
+  IMS_PER_BATCH: 128
+  RE_RANKING: 'no'
+  WEIGHT: ''
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+  MISS: "nothing"
+
+OUTPUT_DIR: '..'
+
+# ============================================================================
+# 运行命令：
+#   python train_net.py --config_file configs/RGBNT201/DeMo_DGAF.yml \
+#       --exp_name "sdtps_dgaf"
+#
+# 对比实验（验证 DGAF 的效果）：
+#   # Baseline: SDTPS only (concat)
+#   python train_net.py --config_file configs/RGBNT201/DeMo_DGAF.yml \
+#       --exp_name "sdtps_concat" MODEL.USE_DGAF False
+#
+#   # With DGAF
+#   python train_net.py --config_file configs/RGBNT201/DeMo_DGAF.yml \
+#       --exp_name "sdtps_dgaf" MODEL.USE_DGAF True
+#
+# 预期效果：
+#   DGAF 通过双门控机制，相比简单 concat：
+#   - 更好地抑制噪声/低质量模态
+#   - 自适应调整模态贡献权重
+#   - 提升对模态缺失/不一致的鲁棒性
+# ============================================================================
+
+2025-12-07 09:59:15,931 DeMo INFO: Running with config:
+DATALOADER:
+  NUM_INSTANCE: 8
+  NUM_WORKERS: 14
+  SAMPLER: softmax_triplet
+DATASETS:
+  NAMES: RGBNT201
+  ROOT_DIR: ..
+INPUT:
+  PADDING: 10
+  PIXEL_MEAN: [0.5, 0.5, 0.5]
+  PIXEL_STD: [0.5, 0.5, 0.5]
+  PROB: 0.5
+  RE_PROB: 0.5
+  SIZE_TEST: [256, 128]
+  SIZE_TRAIN: [256, 128]
+MODEL:
+  ADAPTER: False
+  ATM: False
+  ATT_DROP_RATE: 0.0
+  DEVICE: cuda
+  DEVICE_ID: 0
+  DGAF_INIT_ALPHA: 0.5
+  DGAF_TAU: 1.5
+  DIRECT: 1
+  DIST_TRAIN: False
+  DROP_OUT: 0.0
+  DROP_PATH: 0.1
+  FROZEN: False
+  GLOBAL_LOCAL: True
+  HDM: False
+  HEAD: 4
+  ID_LOSS_TYPE: softmax
+  ID_LOSS_WEIGHT: 0.25
+  IF_LABELSMOOTH: on
+  IF_WITH_CENTER: no
+  LIF_BETA: 0.4
+  LIF_LAYER: 3
+  LIF_LOSS_WEIGHT: 0.2
+  METRIC_LOSS_TYPE: triplet
+  MULTIMODAL_SACR_VERSION: v1
+  NAME: DeMo
+  NECK: bnneck
+  NO_MARGIN: True
+  PRETRAIN_PATH_T: /path/to/your/vitb_16_224_21k.pth
+  PROMPT: False
+  SACR_DILATION_RATES: [2, 3, 4]
+  SDTPS_AGGR_RATIO: 0.5
+  SDTPS_BETA: 0.25
+  SDTPS_GUMBEL_TAU: 5.0
+  SDTPS_LOSS_WEIGHT: 1.0
+  SDTPS_SPARSE_RATIO: 0.7
+  SDTPS_USE_GUMBEL: False
+  SIE_CAMERA: True
+  SIE_COE: 1.0
+  SIE_VIEW: False
+  STRIDE_SIZE: [16, 16]
+  TRANSFORMER_TYPE: ViT-B-16
+  TRIPLET_LOSS_WEIGHT: 1.0
+  USE_DGAF: True
+  USE_LIF: False
+  USE_MULTIMODAL_SACR: False
+  USE_SACR: False
+  USE_SDTPS: True
+OUTPUT_DIR: ..
+SOLVER:
+  BASE_LR: 0.00035
+  BIAS_LR_FACTOR: 2
+  CENTER_LOSS_WEIGHT: 0.0005
+  CENTER_LR: 0.5
+  CHECKPOINT_PERIOD: 10
+  CLUSTER_MARGIN: 0.3
+  COSINE_MARGIN: 0.5
+  COSINE_SCALE: 30
+  EVAL_PERIOD: 1
+  GAMMA: 0.1
+  IMS_PER_BATCH: 64
+  LARGE_FC_LR: False
+  LOG_PERIOD: 10
+  MARGIN: 0.3
+  MAX_EPOCHS: 50
+  MOMENTUM: 0.9
+  OPTIMIZER_NAME: Adam
+  RANGE_ALPHA: 0
+  RANGE_BETA: 1
+  RANGE_K: 2
+  RANGE_LOSS_WEIGHT: 1
+  RANGE_MARGIN: 0.3
+  SEED: 1111
+  STEPS: (40, 70)
+  WARMUP_FACTOR: 0.01
+  WARMUP_ITERS: 10
+  WARMUP_METHOD: linear
+  WEIGHT_DECAY: 0.0001
+  WEIGHT_DECAY_BIAS: 0.0001
+TEST:
+  FEAT: 0
+  FEAT_NORM: yes
+  IMS_PER_BATCH: 128
+  MISS: nothing
+  NECK_FEAT: before
+  RE_RANKING: no
+  WEIGHT: 
+=> RGBNT201 loaded
+Dataset statistics:
+  ----------------------------------------
+  subset   | # ids | # images | # cameras
+  ----------------------------------------
+  train    |   171 |     3951 |         4
+  query    |    30 |      836 |         2
+  gallery  |    30 |      836 |         2
+  ----------------------------------------
+data is ready
+using Transformer_type: ViT-B-16 as a backbone
+Resized position embedding: %s to %s torch.Size([197, 768]) torch.Size([129, 768])
+Position embedding resize to height:16 width: 8
+Successfully load ckpt!
+<All keys matched successfully>
+Loading pretrained model from CLIP
+camera number is : 4
+[SDTPS] 参数设置:
+  输入patches: 128
+  sparse_ratio: 0.7 → 选中 90 patches
+  aggr_ratio: 0.5 → 聚合到 44 patches
+  最终比例: 0.344
+===========Building DeMo===========
+2025-12-07 09:59:24,782 DeMo INFO: DeMo(
+  (BACKBONE): build_transformer(
+    (base): VisionTransformer(
+      (conv1): Conv2d(3, 768, kernel_size=(16, 16), stride=(16, 16), bias=False)
+      (ln_pre): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+      (transformer): Transformer(
+        (resblocks): Sequential(
+          (0): ResidualAttentionBlock(
+            (attn): MultiheadAttention(
+              (out_proj): NonDynamicallyQuantizableLinear(in_features=768, out_features=768, bias=True)
+            )
+            (ln_1): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+            (mlp): Sequential(
+              (c_fc): Linear(in_features=768, out_features=3072, bias=True)
+              (gelu): QuickGELU()
+              (c_proj): Linear(in_features=3072, out_features=768, bias=True)
+            )
+            (ln_2): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+          )
+          (1): ResidualAttentionBlock(
+            (attn): MultiheadAttention(
+              (out_proj): NonDynamicallyQuantizableLinear(in_features=768, out_features=768, bias=True)
+            )
+            (ln_1): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+            (mlp): Sequential(
+              (c_fc): Linear(in_features=768, out_features=3072, bias=True)
+              (gelu): QuickGELU()
+              (c_proj): Linear(in_features=3072, out_features=768, bias=True)
+            )
+            (ln_2): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+          )
+          (2): ResidualAttentionBlock(
+            (attn): MultiheadAttention(
+              (out_proj): NonDynamicallyQuantizableLinear(in_features=768, out_features=768, bias=True)
+            )
+            (ln_1): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+            (mlp): Sequential(
+              (c_fc): Linear(in_features=768, out_features=3072, bias=True)
+              (gelu): QuickGELU()
+              (c_proj): Linear(in_features=3072, out_features=768, bias=True)
+            )
+            (ln_2): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+          )
+          (3): ResidualAttentionBlock(
+            (attn): MultiheadAttention(
+              (out_proj): NonDynamicallyQuantizableLinear(in_features=768, out_features=768, bias=True)
+            )
+            (ln_1): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+            (mlp): Sequential(
+              (c_fc): Linear(in_features=768, out_features=3072, bias=True)
+              (gelu): QuickGELU()
+              (c_proj): Linear(in_features=3072, out_features=768, bias=True)
+            )
+            (ln_2): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+          )
+          (4): ResidualAttentionBlock(
+            (attn): MultiheadAttention(
+              (out_proj): NonDynamicallyQuantizableLinear(in_features=768, out_features=768, bias=True)
+            )
+            (ln_1): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+            (mlp): Sequential(
+              (c_fc): Linear(in_features=768, out_features=3072, bias=True)
+              (gelu): QuickGELU()
+              (c_proj): Linear(in_features=3072, out_features=768, bias=True)
+            )
+            (ln_2): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+          )
+          (5): ResidualAttentionBlock(
+            (attn): MultiheadAttention(
+              (out_proj): NonDynamicallyQuantizableLinear(in_features=768, out_features=768, bias=True)
+            )
+            (ln_1): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+            (mlp): Sequential(
+              (c_fc): Linear(in_features=768, out_features=3072, bias=True)
+              (gelu): QuickGELU()
+              (c_proj): Linear(in_features=3072, out_features=768, bias=True)
+            )
+            (ln_2): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+          )
+          (6): ResidualAttentionBlock(
+            (attn): MultiheadAttention(
+              (out_proj): NonDynamicallyQuantizableLinear(in_features=768, out_features=768, bias=True)
+            )
+            (ln_1): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+            (mlp): Sequential(
+              (c_fc): Linear(in_features=768, out_features=3072, bias=True)
+              (gelu): QuickGELU()
+              (c_proj): Linear(in_features=3072, out_features=768, bias=True)
+            )
+            (ln_2): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+          )
+          (7): ResidualAttentionBlock(
+            (attn): MultiheadAttention(
+              (out_proj): NonDynamicallyQuantizableLinear(in_features=768, out_features=768, bias=True)
+            )
+            (ln_1): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+            (mlp): Sequential(
+              (c_fc): Linear(in_features=768, out_features=3072, bias=True)
+              (gelu): QuickGELU()
+              (c_proj): Linear(in_features=3072, out_features=768, bias=True)
+            )
+            (ln_2): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+          )
+          (8): ResidualAttentionBlock(
+            (attn): MultiheadAttention(
+              (out_proj): NonDynamicallyQuantizableLinear(in_features=768, out_features=768, bias=True)
+            )
+            (ln_1): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+            (mlp): Sequential(
+              (c_fc): Linear(in_features=768, out_features=3072, bias=True)
+              (gelu): QuickGELU()
+              (c_proj): Linear(in_features=3072, out_features=768, bias=True)
+            )
+            (ln_2): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+          )
+          (9): ResidualAttentionBlock(
+            (attn): MultiheadAttention(
+              (out_proj): NonDynamicallyQuantizableLinear(in_features=768, out_features=768, bias=True)
+            )
+            (ln_1): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+            (mlp): Sequential(
+              (c_fc): Linear(in_features=768, out_features=3072, bias=True)
+              (gelu): QuickGELU()
+              (c_proj): Linear(in_features=3072, out_features=768, bias=True)
+            )
+            (ln_2): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+          )
+          (10): ResidualAttentionBlock(
+            (attn): MultiheadAttention(
+              (out_proj): NonDynamicallyQuantizableLinear(in_features=768, out_features=768, bias=True)
+            )
+            (ln_1): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+            (mlp): Sequential(
+              (c_fc): Linear(in_features=768, out_features=3072, bias=True)
+              (gelu): QuickGELU()
+              (c_proj): Linear(in_features=3072, out_features=768, bias=True)
+            )
+            (ln_2): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+          )
+          (11): ResidualAttentionBlock(
+            (attn): MultiheadAttention(
+              (out_proj): NonDynamicallyQuantizableLinear(in_features=768, out_features=768, bias=True)
+            )
+            (ln_1): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+            (mlp): Sequential(
+              (c_fc): Linear(in_features=768, out_features=3072, bias=True)
+              (gelu): QuickGELU()
+              (c_proj): Linear(in_features=3072, out_features=768, bias=True)
+            )
+            (ln_2): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+          )
+        )
+      )
+      (ln_post): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+    )
+  )
+  (pool): AdaptiveAvgPool1d(output_size=1)
+  (rgb_reduce): Sequential(
+    (0): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+    (1): Linear(in_features=1024, out_features=512, bias=True)
+    (2): QuickGELU()
+  )
+  (nir_reduce): Sequential(
+    (0): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+    (1): Linear(in_features=1024, out_features=512, bias=True)
+    (2): QuickGELU()
+  )
+  (tir_reduce): Sequential(
+    (0): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+    (1): Linear(in_features=1024, out_features=512, bias=True)
+    (2): QuickGELU()
+  )
+  (dgaf): DualGatedPostFusion(
+    (entropy_proj): Linear(in_features=512, out_features=512, bias=True)
+    (gate_net): Sequential(
+      (0): Linear(in_features=1536, out_features=512, bias=True)
+      (1): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+      (2): ReLU(inplace=True)
+      (3): Linear(in_features=512, out_features=3, bias=True)
+      (4): Sigmoid()
+    )
+    (modal_enhance): Sequential(
+      (0): Linear(in_features=512, out_features=512, bias=True)
+      (1): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+    )
+  )
+  (sdtps): MultiModalSDTPS(
+    (rgb_sparse): TokenSparse(
+      (score_predictor): Sequential(
+        (0): Linear(in_features=512, out_features=128, bias=True)
+        (1): GELU(approximate='none')
+        (2): Linear(in_features=128, out_features=1, bias=True)
+        (3): Sigmoid()
+      )
+    )
+    (rgb_aggr): TokenAggregation(
+      (weight): Sequential(
+        (0): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+        (1): Linear(in_features=512, out_features=102, bias=True)
+        (2): GELU(approximate='none')
+        (3): Linear(in_features=102, out_features=44, bias=True)
+      )
+    )
+    (nir_sparse): TokenSparse(
+      (score_predictor): Sequential(
+        (0): Linear(in_features=512, out_features=128, bias=True)
+        (1): GELU(approximate='none')
+        (2): Linear(in_features=128, out_features=1, bias=True)
+        (3): Sigmoid()
+      )
+    )
+    (nir_aggr): TokenAggregation(
+      (weight): Sequential(
+        (0): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+        (1): Linear(in_features=512, out_features=102, bias=True)
+        (2): GELU(approximate='none')
+        (3): Linear(in_features=102, out_features=44, bias=True)
+      )
+    )
+    (tir_sparse): TokenSparse(
+      (score_predictor): Sequential(
+        (0): Linear(in_features=512, out_features=128, bias=True)
+        (1): GELU(approximate='none')
+        (2): Linear(in_features=128, out_features=1, bias=True)
+        (3): Sigmoid()
+      )
+    )
+    (tir_aggr): TokenAggregation(
+      (weight): Sequential(
+        (0): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+        (1): Linear(in_features=512, out_features=102, bias=True)
+        (2): GELU(approximate='none')
+        (3): Linear(in_features=102, out_features=44, bias=True)
+      )
+    )
+  )
+  (classifier_sdtps): Linear(in_features=1536, out_features=171, bias=False)
+  (bottleneck_sdtps): BatchNorm1d(1536, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+  (classifier): Linear(in_features=1536, out_features=171, bias=False)
+  (bottleneck): BatchNorm1d(1536, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+)
+2025-12-07 09:59:24,783 DeMo INFO: number of parameters:89.939288
+/home/yij/miniconda3/envs/DeMo/lib/python3.8/site-packages/timm/models/helpers.py:7: FutureWarning: Importing from timm.models.helpers is deprecated, please import via timm.models
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.models", FutureWarning)
+/home/yij/miniconda3/envs/DeMo/lib/python3.8/site-packages/timm/models/registry.py:4: FutureWarning: Importing from timm.models.registry is deprecated, please import via timm.models
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.models", FutureWarning)
+/home/yij/miniconda3/envs/DeMo/lib/python3.8/site-packages/timm/models/layers/__init__.py:48: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
+/raid/yij/icme/demo2new/DeMo2/modeling/clip/clip.py:23: UserWarning: PyTorch version 1.7.1 or higher is recommended
+  warnings.warn("PyTorch version 1.7.1 or higher is recommended")
+/home/yij/miniconda3/envs/DeMo/lib/python3.8/site-packages/torchvision/transforms/transforms.py:329: UserWarning: Argument 'interpolation' of type int is deprecated since 0.13 and will be removed in 0.15. Please use InterpolationMode enum.
+  warnings.warn(
+Unsupported operator aten::log encountered 6 time(s)
+The following submodules of the model were never called during the trace of the graph. They may be unused, or they were accessed by direct calls to .forward() or via other python methods. In the latter case they will have zeros for statistics, though their statistics will still contribute to their parent calling module.
+BACKBONE.base.transformer.resblocks.0.attn.out_proj, BACKBONE.base.transformer.resblocks.1.attn.out_proj, BACKBONE.base.transformer.resblocks.10.attn.out_proj, BACKBONE.base.transformer.resblocks.11.attn.out_proj, BACKBONE.base.transformer.resblocks.2.attn.out_proj, BACKBONE.base.transformer.resblocks.3.attn.out_proj, BACKBONE.base.transformer.resblocks.4.attn.out_proj, BACKBONE.base.transformer.resblocks.5.attn.out_proj, BACKBONE.base.transformer.resblocks.6.attn.out_proj, BACKBONE.base.transformer.resblocks.7.attn.out_proj, BACKBONE.base.transformer.resblocks.8.attn.out_proj, BACKBONE.base.transformer.resblocks.9.attn.out_proj, bottleneck, bottleneck_sdtps, classifier, classifier_sdtps
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The out_proj here is called by the nn.MultiheadAttention, which has been calculated in th .forward(), so just ignore it.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+For the bottleneck or classifier, it is not calculated during inference, so just ignore it.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 09:59:35,103 DeMo INFO: number of GFLOPs: 34.329609987999994
+using soft triplet loss for training
+label smooth on, numclasses: 171
+2025-12-07 09:59:35,118 DeMo.train INFO: start training
+/home/yij/miniconda3/envs/DeMo/lib/python3.8/site-packages/torch/optim/lr_scheduler.py:138: UserWarning: Detected call of `lr_scheduler.step()` before `optimizer.step()`. In PyTorch 1.1.0 and later, you should call them in the opposite order: `optimizer.step()` before `lr_scheduler.step()`.  Failure to do this will result in PyTorch skipping the first value of the learning rate schedule. See more details at https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate
+  warnings.warn("Detected call of `lr_scheduler.step()` before `optimizer.step()`. "
+/home/yij/miniconda3/envs/DeMo/lib/python3.8/site-packages/torch/optim/lr_scheduler.py:163: UserWarning: The epoch parameter in `scheduler.step()` was not necessary and is being deprecated where possible. Please use `scheduler.step()` to step the scheduler. During the deprecation, if epoch is different from None, the closed form is used instead of the new chainable form, where available. Please open an issue if you are unable to replicate your use case: https://github.com/pytorch/pytorch/issues/new/choose.
+  warnings.warn(EPOCH_DEPRECATION_WARNING, UserWarning)
+2025-12-07 09:59:45,071 DeMo.train INFO: Epoch[1] Iteration[10/54] Loss: 7.341, Acc: 0.011, Base Lr: 3.82e-05
+2025-12-07 09:59:47,680 DeMo.train INFO: Epoch[1] Iteration[20/54] Loss: 6.650, Acc: 0.022, Base Lr: 3.82e-05
+2025-12-07 09:59:50,323 DeMo.train INFO: Epoch[1] Iteration[30/54] Loss: 6.129, Acc: 0.036, Base Lr: 3.82e-05
+2025-12-07 09:59:53,088 DeMo.train INFO: Epoch[1] Iteration[40/54] Loss: 5.822, Acc: 0.057, Base Lr: 3.82e-05
+2025-12-07 09:59:55,739 DeMo.train INFO: Epoch[1] Iteration[50/54] Loss: 5.616, Acc: 0.073, Base Lr: 3.82e-05
+2025-12-07 09:59:56,669 DeMo.train INFO: Epoch 1 done. Time per batch: 0.406[s] Speed: 157.5[samples/s]
+2025-12-07 09:59:56,671 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 09:59:56,671 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 09:59:56,671 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:00:09,931 DeMo.train INFO: Validation Results - Epoch: 1
+2025-12-07 10:00:09,931 DeMo.train INFO: mAP: 4.3%
+2025-12-07 10:00:09,931 DeMo.train INFO: CMC curve, Rank-1  :2.6%
+2025-12-07 10:00:09,932 DeMo.train INFO: CMC curve, Rank-5  :9.3%
+2025-12-07 10:00:09,932 DeMo.train INFO: CMC curve, Rank-10 :16.1%
+2025-12-07 10:00:09,932 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:00:09,933 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:00:09,933 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:00:09,933 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:00:21,069 DeMo.train INFO: Validation Results - Epoch: 1
+2025-12-07 10:00:21,069 DeMo.train INFO: mAP: 9.4%
+2025-12-07 10:00:21,069 DeMo.train INFO: CMC curve, Rank-1  :11.1%
+2025-12-07 10:00:21,069 DeMo.train INFO: CMC curve, Rank-5  :21.3%
+2025-12-07 10:00:21,069 DeMo.train INFO: CMC curve, Rank-10 :29.5%
+2025-12-07 10:00:21,070 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:00:21,584 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:00:21,585 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:00:21,585 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:00:34,348 DeMo.train INFO: Validation Results - Epoch: 1
+2025-12-07 10:00:34,348 DeMo.train INFO: mAP: 7.7%
+2025-12-07 10:00:34,348 DeMo.train INFO: CMC curve, Rank-1  :7.5%
+2025-12-07 10:00:34,348 DeMo.train INFO: CMC curve, Rank-5  :17.6%
+2025-12-07 10:00:34,348 DeMo.train INFO: CMC curve, Rank-10 :24.8%
+2025-12-07 10:00:34,349 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:01:09,249 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:01:09,253 DeMo.train INFO: Best mAP: 7.7%
+2025-12-07 10:01:09,254 DeMo.train INFO: Best Rank-1: 7.5%
+2025-12-07 10:01:09,254 DeMo.train INFO: Best Rank-5: 17.6%
+2025-12-07 10:01:09,254 DeMo.train INFO: Best Rank-10: 24.8%
+2025-12-07 10:01:09,254 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:01:13,917 DeMo.train INFO: Epoch[2] Iteration[10/54] Loss: 4.447, Acc: 0.447, Base Lr: 7.28e-05
+2025-12-07 10:01:16,744 DeMo.train INFO: Epoch[2] Iteration[20/54] Loss: 4.363, Acc: 0.423, Base Lr: 7.28e-05
+2025-12-07 10:01:19,339 DeMo.train INFO: Epoch[2] Iteration[30/54] Loss: 4.303, Acc: 0.423, Base Lr: 7.28e-05
+2025-12-07 10:01:21,930 DeMo.train INFO: Epoch[2] Iteration[40/54] Loss: 4.257, Acc: 0.436, Base Lr: 7.28e-05
+2025-12-07 10:01:24,572 DeMo.train INFO: Epoch[2] Iteration[50/54] Loss: 4.218, Acc: 0.421, Base Lr: 7.28e-05
+2025-12-07 10:01:25,482 DeMo.train INFO: Epoch 2 done. Time per batch: 0.306[s] Speed: 209.0[samples/s]
+2025-12-07 10:01:25,483 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:01:25,483 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:01:25,483 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:01:37,954 DeMo.train INFO: Validation Results - Epoch: 2
+2025-12-07 10:01:37,954 DeMo.train INFO: mAP: 8.7%
+2025-12-07 10:01:37,955 DeMo.train INFO: CMC curve, Rank-1  :8.3%
+2025-12-07 10:01:37,955 DeMo.train INFO: CMC curve, Rank-5  :17.3%
+2025-12-07 10:01:37,955 DeMo.train INFO: CMC curve, Rank-10 :25.5%
+2025-12-07 10:01:37,955 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:01:38,375 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:01:38,376 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:01:38,376 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:01:49,846 DeMo.train INFO: Validation Results - Epoch: 2
+2025-12-07 10:01:49,847 DeMo.train INFO: mAP: 14.8%
+2025-12-07 10:01:49,849 DeMo.train INFO: CMC curve, Rank-1  :16.4%
+2025-12-07 10:01:49,850 DeMo.train INFO: CMC curve, Rank-5  :31.9%
+2025-12-07 10:01:49,852 DeMo.train INFO: CMC curve, Rank-10 :43.5%
+2025-12-07 10:01:49,854 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:01:50,724 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:01:50,725 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:01:50,727 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:02:06,054 DeMo.train INFO: Validation Results - Epoch: 2
+2025-12-07 10:02:06,056 DeMo.train INFO: mAP: 13.5%
+2025-12-07 10:02:06,057 DeMo.train INFO: CMC curve, Rank-1  :12.4%
+2025-12-07 10:02:06,059 DeMo.train INFO: CMC curve, Rank-5  :26.6%
+2025-12-07 10:02:06,060 DeMo.train INFO: CMC curve, Rank-10 :34.4%
+2025-12-07 10:02:06,062 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:02:51,344 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:02:51,345 DeMo.train INFO: Best mAP: 13.5%
+2025-12-07 10:02:51,347 DeMo.train INFO: Best Rank-1: 12.4%
+2025-12-07 10:02:51,348 DeMo.train INFO: Best Rank-5: 26.6%
+2025-12-07 10:02:51,349 DeMo.train INFO: Best Rank-10: 34.4%
+2025-12-07 10:02:51,350 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:02:59,572 DeMo.train INFO: Epoch[3] Iteration[10/54] Loss: 3.707, Acc: 0.709, Base Lr: 1.07e-04
+2025-12-07 10:03:02,783 DeMo.train INFO: Epoch[3] Iteration[20/54] Loss: 3.687, Acc: 0.643, Base Lr: 1.07e-04
+2025-12-07 10:03:05,390 DeMo.train INFO: Epoch[3] Iteration[30/54] Loss: 3.670, Acc: 0.610, Base Lr: 1.07e-04
+2025-12-07 10:03:08,010 DeMo.train INFO: Epoch[3] Iteration[40/54] Loss: 3.623, Acc: 0.580, Base Lr: 1.07e-04
+2025-12-07 10:03:10,636 DeMo.train INFO: Epoch[3] Iteration[50/54] Loss: 3.606, Acc: 0.544, Base Lr: 1.07e-04
+2025-12-07 10:03:11,544 DeMo.train INFO: Epoch 3 done. Time per batch: 0.381[s] Speed: 168.0[samples/s]
+2025-12-07 10:03:11,546 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:03:11,546 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:03:11,546 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:03:22,690 DeMo.train INFO: Validation Results - Epoch: 3
+2025-12-07 10:03:22,690 DeMo.train INFO: mAP: 22.1%
+2025-12-07 10:03:22,690 DeMo.train INFO: CMC curve, Rank-1  :22.0%
+2025-12-07 10:03:22,690 DeMo.train INFO: CMC curve, Rank-5  :39.4%
+2025-12-07 10:03:22,691 DeMo.train INFO: CMC curve, Rank-10 :50.5%
+2025-12-07 10:03:22,691 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:03:22,764 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:03:22,764 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:03:22,764 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:03:34,537 DeMo.train INFO: Validation Results - Epoch: 3
+2025-12-07 10:03:34,537 DeMo.train INFO: mAP: 27.7%
+2025-12-07 10:03:34,537 DeMo.train INFO: CMC curve, Rank-1  :31.1%
+2025-12-07 10:03:34,537 DeMo.train INFO: CMC curve, Rank-5  :49.6%
+2025-12-07 10:03:34,537 DeMo.train INFO: CMC curve, Rank-10 :56.5%
+2025-12-07 10:03:34,537 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:03:34,548 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:03:34,548 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:03:34,548 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:03:48,907 DeMo.train INFO: Validation Results - Epoch: 3
+2025-12-07 10:03:48,909 DeMo.train INFO: mAP: 27.9%
+2025-12-07 10:03:48,910 DeMo.train INFO: CMC curve, Rank-1  :29.3%
+2025-12-07 10:03:48,911 DeMo.train INFO: CMC curve, Rank-5  :47.2%
+2025-12-07 10:03:48,912 DeMo.train INFO: CMC curve, Rank-10 :55.6%
+2025-12-07 10:03:48,913 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:04:41,386 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:04:41,388 DeMo.train INFO: Best mAP: 27.9%
+2025-12-07 10:04:41,388 DeMo.train INFO: Best Rank-1: 29.3%
+2025-12-07 10:04:41,388 DeMo.train INFO: Best Rank-5: 47.2%
+2025-12-07 10:04:41,388 DeMo.train INFO: Best Rank-10: 55.6%
+2025-12-07 10:04:41,388 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:04:49,743 DeMo.train INFO: Epoch[4] Iteration[10/54] Loss: 3.067, Acc: 0.780, Base Lr: 1.42e-04
+2025-12-07 10:04:52,366 DeMo.train INFO: Epoch[4] Iteration[20/54] Loss: 2.978, Acc: 0.756, Base Lr: 1.42e-04
+2025-12-07 10:04:55,035 DeMo.train INFO: Epoch[4] Iteration[30/54] Loss: 2.918, Acc: 0.742, Base Lr: 1.42e-04
+2025-12-07 10:04:57,690 DeMo.train INFO: Epoch[4] Iteration[40/54] Loss: 2.855, Acc: 0.724, Base Lr: 1.42e-04
+2025-12-07 10:05:00,302 DeMo.train INFO: Epoch[4] Iteration[50/54] Loss: 2.817, Acc: 0.693, Base Lr: 1.42e-04
+2025-12-07 10:05:01,214 DeMo.train INFO: Epoch 4 done. Time per batch: 0.374[s] Speed: 171.1[samples/s]
+2025-12-07 10:05:01,217 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:05:01,217 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:05:01,218 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:05:12,154 DeMo.train INFO: Validation Results - Epoch: 4
+2025-12-07 10:05:12,154 DeMo.train INFO: mAP: 36.5%
+2025-12-07 10:05:12,154 DeMo.train INFO: CMC curve, Rank-1  :36.4%
+2025-12-07 10:05:12,154 DeMo.train INFO: CMC curve, Rank-5  :52.2%
+2025-12-07 10:05:12,154 DeMo.train INFO: CMC curve, Rank-10 :60.4%
+2025-12-07 10:05:12,154 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:05:13,565 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:05:13,565 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:05:13,565 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:05:24,592 DeMo.train INFO: Validation Results - Epoch: 4
+2025-12-07 10:05:24,592 DeMo.train INFO: mAP: 41.1%
+2025-12-07 10:05:24,592 DeMo.train INFO: CMC curve, Rank-1  :46.5%
+2025-12-07 10:05:24,593 DeMo.train INFO: CMC curve, Rank-5  :59.7%
+2025-12-07 10:05:24,593 DeMo.train INFO: CMC curve, Rank-10 :66.0%
+2025-12-07 10:05:24,593 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:05:25,183 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:05:25,184 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:05:25,184 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:05:37,264 DeMo.train INFO: Validation Results - Epoch: 4
+2025-12-07 10:05:37,265 DeMo.train INFO: mAP: 42.3%
+2025-12-07 10:05:37,267 DeMo.train INFO: CMC curve, Rank-1  :45.0%
+2025-12-07 10:05:37,268 DeMo.train INFO: CMC curve, Rank-5  :58.4%
+2025-12-07 10:05:37,269 DeMo.train INFO: CMC curve, Rank-10 :64.8%
+2025-12-07 10:05:37,270 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:06:36,817 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:06:36,817 DeMo.train INFO: Best mAP: 42.3%
+2025-12-07 10:06:36,818 DeMo.train INFO: Best Rank-1: 45.0%
+2025-12-07 10:06:36,818 DeMo.train INFO: Best Rank-5: 58.4%
+2025-12-07 10:06:36,818 DeMo.train INFO: Best Rank-10: 64.8%
+2025-12-07 10:06:36,819 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:06:41,113 DeMo.train INFO: Epoch[5] Iteration[10/54] Loss: 2.139, Acc: 0.794, Base Lr: 1.77e-04
+2025-12-07 10:06:44,250 DeMo.train INFO: Epoch[5] Iteration[20/54] Loss: 2.137, Acc: 0.799, Base Lr: 1.77e-04
+2025-12-07 10:06:46,867 DeMo.train INFO: Epoch[5] Iteration[30/54] Loss: 2.115, Acc: 0.779, Base Lr: 1.77e-04
+2025-12-07 10:06:49,468 DeMo.train INFO: Epoch[5] Iteration[40/54] Loss: 2.057, Acc: 0.772, Base Lr: 1.77e-04
+2025-12-07 10:06:52,076 DeMo.train INFO: Epoch[5] Iteration[50/54] Loss: 2.029, Acc: 0.749, Base Lr: 1.77e-04
+2025-12-07 10:06:53,035 DeMo.train INFO: Epoch 5 done. Time per batch: 0.306[s] Speed: 209.2[samples/s]
+2025-12-07 10:06:53,037 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:06:53,037 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:06:53,037 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:07:04,278 DeMo.train INFO: Validation Results - Epoch: 5
+2025-12-07 10:07:04,290 DeMo.train INFO: mAP: 45.4%
+2025-12-07 10:07:04,291 DeMo.train INFO: CMC curve, Rank-1  :45.6%
+2025-12-07 10:07:04,291 DeMo.train INFO: CMC curve, Rank-5  :59.4%
+2025-12-07 10:07:04,291 DeMo.train INFO: CMC curve, Rank-10 :66.1%
+2025-12-07 10:07:04,292 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:07:04,349 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:07:04,350 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:07:04,350 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:07:15,430 DeMo.train INFO: Validation Results - Epoch: 5
+2025-12-07 10:07:15,431 DeMo.train INFO: mAP: 44.8%
+2025-12-07 10:07:15,431 DeMo.train INFO: CMC curve, Rank-1  :45.7%
+2025-12-07 10:07:15,431 DeMo.train INFO: CMC curve, Rank-5  :61.8%
+2025-12-07 10:07:15,431 DeMo.train INFO: CMC curve, Rank-10 :71.2%
+2025-12-07 10:07:15,431 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:07:16,052 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:07:16,052 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:07:16,052 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:07:28,158 DeMo.train INFO: Validation Results - Epoch: 5
+2025-12-07 10:07:28,159 DeMo.train INFO: mAP: 48.2%
+2025-12-07 10:07:28,160 DeMo.train INFO: CMC curve, Rank-1  :49.6%
+2025-12-07 10:07:28,161 DeMo.train INFO: CMC curve, Rank-5  :62.9%
+2025-12-07 10:07:28,162 DeMo.train INFO: CMC curve, Rank-10 :72.1%
+2025-12-07 10:07:28,162 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:08:33,026 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:08:33,028 DeMo.train INFO: Best mAP: 48.2%
+2025-12-07 10:08:33,029 DeMo.train INFO: Best Rank-1: 49.6%
+2025-12-07 10:08:33,031 DeMo.train INFO: Best Rank-5: 62.9%
+2025-12-07 10:08:33,031 DeMo.train INFO: Best Rank-10: 72.1%
+2025-12-07 10:08:33,032 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:08:40,605 DeMo.train INFO: Epoch[6] Iteration[10/54] Loss: 1.448, Acc: 0.783, Base Lr: 2.11e-04
+2025-12-07 10:08:44,115 DeMo.train INFO: Epoch[6] Iteration[20/54] Loss: 1.361, Acc: 0.836, Base Lr: 2.11e-04
+2025-12-07 10:08:46,746 DeMo.train INFO: Epoch[6] Iteration[30/54] Loss: 1.329, Acc: 0.841, Base Lr: 2.11e-04
+2025-12-07 10:08:49,369 DeMo.train INFO: Epoch[6] Iteration[40/54] Loss: 1.312, Acc: 0.843, Base Lr: 2.11e-04
+2025-12-07 10:08:51,977 DeMo.train INFO: Epoch[6] Iteration[50/54] Loss: 1.294, Acc: 0.844, Base Lr: 2.11e-04
+2025-12-07 10:08:52,904 DeMo.train INFO: Epoch 6 done. Time per batch: 0.375[s] Speed: 170.7[samples/s]
+2025-12-07 10:08:52,908 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:08:52,908 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:08:52,908 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:09:04,057 DeMo.train INFO: Validation Results - Epoch: 6
+2025-12-07 10:09:04,057 DeMo.train INFO: mAP: 51.3%
+2025-12-07 10:09:04,058 DeMo.train INFO: CMC curve, Rank-1  :52.3%
+2025-12-07 10:09:04,058 DeMo.train INFO: CMC curve, Rank-5  :65.9%
+2025-12-07 10:09:04,058 DeMo.train INFO: CMC curve, Rank-10 :72.4%
+2025-12-07 10:09:04,058 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:09:05,214 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:09:05,215 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:09:05,215 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:09:16,727 DeMo.train INFO: Validation Results - Epoch: 6
+2025-12-07 10:09:16,727 DeMo.train INFO: mAP: 50.4%
+2025-12-07 10:09:16,727 DeMo.train INFO: CMC curve, Rank-1  :52.9%
+2025-12-07 10:09:16,727 DeMo.train INFO: CMC curve, Rank-5  :65.7%
+2025-12-07 10:09:16,727 DeMo.train INFO: CMC curve, Rank-10 :73.7%
+2025-12-07 10:09:16,728 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:09:16,731 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:09:16,731 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:09:16,732 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:09:28,660 DeMo.train INFO: Validation Results - Epoch: 6
+2025-12-07 10:09:28,662 DeMo.train INFO: mAP: 54.3%
+2025-12-07 10:09:28,665 DeMo.train INFO: CMC curve, Rank-1  :55.1%
+2025-12-07 10:09:28,666 DeMo.train INFO: CMC curve, Rank-5  :66.5%
+2025-12-07 10:09:28,668 DeMo.train INFO: CMC curve, Rank-10 :74.9%
+2025-12-07 10:09:28,669 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:10:34,335 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:10:34,337 DeMo.train INFO: Best mAP: 54.3%
+2025-12-07 10:10:34,337 DeMo.train INFO: Best Rank-1: 55.1%
+2025-12-07 10:10:34,338 DeMo.train INFO: Best Rank-5: 66.5%
+2025-12-07 10:10:34,338 DeMo.train INFO: Best Rank-10: 74.9%
+2025-12-07 10:10:34,338 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:10:42,009 DeMo.train INFO: Epoch[7] Iteration[10/54] Loss: 0.933, Acc: 0.934, Base Lr: 2.46e-04
+2025-12-07 10:10:45,392 DeMo.train INFO: Epoch[7] Iteration[20/54] Loss: 0.956, Acc: 0.928, Base Lr: 2.46e-04
+2025-12-07 10:10:47,993 DeMo.train INFO: Epoch[7] Iteration[30/54] Loss: 0.948, Acc: 0.907, Base Lr: 2.46e-04
+2025-12-07 10:10:50,620 DeMo.train INFO: Epoch[7] Iteration[40/54] Loss: 0.977, Acc: 0.906, Base Lr: 2.46e-04
+2025-12-07 10:10:53,268 DeMo.train INFO: Epoch[7] Iteration[50/54] Loss: 0.985, Acc: 0.911, Base Lr: 2.46e-04
+2025-12-07 10:10:54,226 DeMo.train INFO: Epoch 7 done. Time per batch: 0.375[s] Speed: 170.6[samples/s]
+2025-12-07 10:10:54,228 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:10:54,228 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:10:54,228 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:11:06,364 DeMo.train INFO: Validation Results - Epoch: 7
+2025-12-07 10:11:06,364 DeMo.train INFO: mAP: 45.4%
+2025-12-07 10:11:06,364 DeMo.train INFO: CMC curve, Rank-1  :45.5%
+2025-12-07 10:11:06,364 DeMo.train INFO: CMC curve, Rank-5  :58.4%
+2025-12-07 10:11:06,365 DeMo.train INFO: CMC curve, Rank-10 :66.4%
+2025-12-07 10:11:06,365 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:11:08,967 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:11:08,967 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:11:08,967 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:11:20,728 DeMo.train INFO: Validation Results - Epoch: 7
+2025-12-07 10:11:20,728 DeMo.train INFO: mAP: 48.9%
+2025-12-07 10:11:20,728 DeMo.train INFO: CMC curve, Rank-1  :50.1%
+2025-12-07 10:11:20,728 DeMo.train INFO: CMC curve, Rank-5  :63.6%
+2025-12-07 10:11:20,729 DeMo.train INFO: CMC curve, Rank-10 :70.7%
+2025-12-07 10:11:20,729 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:11:20,732 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:11:20,733 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:11:20,733 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:11:32,492 DeMo.train INFO: Validation Results - Epoch: 7
+2025-12-07 10:11:32,493 DeMo.train INFO: mAP: 50.8%
+2025-12-07 10:11:32,495 DeMo.train INFO: CMC curve, Rank-1  :51.8%
+2025-12-07 10:11:32,496 DeMo.train INFO: CMC curve, Rank-5  :62.4%
+2025-12-07 10:11:32,498 DeMo.train INFO: CMC curve, Rank-10 :69.7%
+2025-12-07 10:11:32,499 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:11:33,046 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:11:33,048 DeMo.train INFO: Best mAP: 54.3%
+2025-12-07 10:11:33,049 DeMo.train INFO: Best Rank-1: 55.1%
+2025-12-07 10:11:33,050 DeMo.train INFO: Best Rank-5: 66.5%
+2025-12-07 10:11:33,052 DeMo.train INFO: Best Rank-10: 74.9%
+2025-12-07 10:11:33,053 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:11:45,261 DeMo.train INFO: Epoch[8] Iteration[10/54] Loss: 0.803, Acc: 0.948, Base Lr: 2.81e-04
+2025-12-07 10:11:49,288 DeMo.train INFO: Epoch[8] Iteration[20/54] Loss: 0.855, Acc: 0.952, Base Lr: 2.81e-04
+2025-12-07 10:11:55,121 DeMo.train INFO: Epoch[8] Iteration[30/54] Loss: 0.823, Acc: 0.953, Base Lr: 2.81e-04
+2025-12-07 10:11:57,743 DeMo.train INFO: Epoch[8] Iteration[40/54] Loss: 0.792, Acc: 0.959, Base Lr: 2.81e-04
+2025-12-07 10:12:03,802 DeMo.train INFO: Epoch[8] Iteration[50/54] Loss: 0.787, Acc: 0.961, Base Lr: 2.81e-04
+2025-12-07 10:12:04,729 DeMo.train INFO: Epoch 8 done. Time per batch: 0.598[s] Speed: 107.1[samples/s]
+2025-12-07 10:12:04,731 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:12:04,731 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:12:04,731 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:12:16,149 DeMo.train INFO: Validation Results - Epoch: 8
+2025-12-07 10:12:16,149 DeMo.train INFO: mAP: 54.1%
+2025-12-07 10:12:16,149 DeMo.train INFO: CMC curve, Rank-1  :54.8%
+2025-12-07 10:12:16,149 DeMo.train INFO: CMC curve, Rank-5  :67.7%
+2025-12-07 10:12:16,149 DeMo.train INFO: CMC curve, Rank-10 :73.9%
+2025-12-07 10:12:16,149 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:12:18,694 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:12:18,694 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:12:18,694 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:12:30,372 DeMo.train INFO: Validation Results - Epoch: 8
+2025-12-07 10:12:30,373 DeMo.train INFO: mAP: 53.4%
+2025-12-07 10:12:30,373 DeMo.train INFO: CMC curve, Rank-1  :54.4%
+2025-12-07 10:12:30,373 DeMo.train INFO: CMC curve, Rank-5  :66.0%
+2025-12-07 10:12:30,373 DeMo.train INFO: CMC curve, Rank-10 :73.8%
+2025-12-07 10:12:30,373 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:12:30,870 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:12:30,871 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:12:30,871 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:12:42,357 DeMo.train INFO: Validation Results - Epoch: 8
+2025-12-07 10:12:42,358 DeMo.train INFO: mAP: 57.2%
+2025-12-07 10:12:42,359 DeMo.train INFO: CMC curve, Rank-1  :57.7%
+2025-12-07 10:12:42,360 DeMo.train INFO: CMC curve, Rank-5  :68.2%
+2025-12-07 10:12:42,361 DeMo.train INFO: CMC curve, Rank-10 :75.2%
+2025-12-07 10:12:42,361 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:13:19,953 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:13:19,954 DeMo.train INFO: Best mAP: 57.2%
+2025-12-07 10:13:19,956 DeMo.train INFO: Best Rank-1: 57.7%
+2025-12-07 10:13:19,957 DeMo.train INFO: Best Rank-5: 68.2%
+2025-12-07 10:13:19,957 DeMo.train INFO: Best Rank-10: 75.2%
+2025-12-07 10:13:19,958 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:13:33,206 DeMo.train INFO: Epoch[9] Iteration[10/54] Loss: 0.609, Acc: 0.994, Base Lr: 3.15e-04
+2025-12-07 10:13:35,888 DeMo.train INFO: Epoch[9] Iteration[20/54] Loss: 0.632, Acc: 0.988, Base Lr: 3.15e-04
+2025-12-07 10:13:38,502 DeMo.train INFO: Epoch[9] Iteration[30/54] Loss: 0.635, Acc: 0.990, Base Lr: 3.15e-04
+2025-12-07 10:13:41,121 DeMo.train INFO: Epoch[9] Iteration[40/54] Loss: 0.639, Acc: 0.989, Base Lr: 3.15e-04
+2025-12-07 10:13:43,709 DeMo.train INFO: Epoch[9] Iteration[50/54] Loss: 0.647, Acc: 0.988, Base Lr: 3.15e-04
+2025-12-07 10:13:44,618 DeMo.train INFO: Epoch 9 done. Time per batch: 0.465[s] Speed: 137.6[samples/s]
+2025-12-07 10:13:44,623 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:13:44,623 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:13:44,623 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:13:55,590 DeMo.train INFO: Validation Results - Epoch: 9
+2025-12-07 10:13:55,591 DeMo.train INFO: mAP: 46.7%
+2025-12-07 10:13:55,591 DeMo.train INFO: CMC curve, Rank-1  :46.9%
+2025-12-07 10:13:55,591 DeMo.train INFO: CMC curve, Rank-5  :59.4%
+2025-12-07 10:13:55,591 DeMo.train INFO: CMC curve, Rank-10 :67.2%
+2025-12-07 10:13:55,591 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:13:57,226 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:13:57,227 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:13:57,227 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:14:08,833 DeMo.train INFO: Validation Results - Epoch: 9
+2025-12-07 10:14:08,833 DeMo.train INFO: mAP: 48.5%
+2025-12-07 10:14:08,834 DeMo.train INFO: CMC curve, Rank-1  :49.5%
+2025-12-07 10:14:08,834 DeMo.train INFO: CMC curve, Rank-5  :64.5%
+2025-12-07 10:14:08,834 DeMo.train INFO: CMC curve, Rank-10 :71.4%
+2025-12-07 10:14:08,834 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:14:09,092 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:14:09,092 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:14:09,092 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:14:24,731 DeMo.train INFO: Validation Results - Epoch: 9
+2025-12-07 10:14:24,732 DeMo.train INFO: mAP: 51.3%
+2025-12-07 10:14:24,733 DeMo.train INFO: CMC curve, Rank-1  :53.3%
+2025-12-07 10:14:24,734 DeMo.train INFO: CMC curve, Rank-5  :65.8%
+2025-12-07 10:14:24,735 DeMo.train INFO: CMC curve, Rank-10 :70.7%
+2025-12-07 10:14:24,735 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:14:24,820 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:14:24,821 DeMo.train INFO: Best mAP: 57.2%
+2025-12-07 10:14:24,821 DeMo.train INFO: Best Rank-1: 57.7%
+2025-12-07 10:14:24,822 DeMo.train INFO: Best Rank-5: 68.2%
+2025-12-07 10:14:24,823 DeMo.train INFO: Best Rank-10: 75.2%
+2025-12-07 10:14:24,824 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:14:30,143 DeMo.train INFO: Epoch[10] Iteration[10/54] Loss: 0.581, Acc: 0.997, Base Lr: 3.50e-04
+2025-12-07 10:14:32,808 DeMo.train INFO: Epoch[10] Iteration[20/54] Loss: 0.574, Acc: 0.995, Base Lr: 3.50e-04
+2025-12-07 10:14:35,418 DeMo.train INFO: Epoch[10] Iteration[30/54] Loss: 0.575, Acc: 0.991, Base Lr: 3.50e-04
+2025-12-07 10:14:38,034 DeMo.train INFO: Epoch[10] Iteration[40/54] Loss: 0.589, Acc: 0.991, Base Lr: 3.50e-04
+2025-12-07 10:14:40,661 DeMo.train INFO: Epoch[10] Iteration[50/54] Loss: 0.591, Acc: 0.991, Base Lr: 3.50e-04
+2025-12-07 10:14:41,566 DeMo.train INFO: Epoch 10 done. Time per batch: 0.316[s] Speed: 202.6[samples/s]
+2025-12-07 10:14:41,567 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:14:41,567 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:14:41,567 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:14:53,399 DeMo.train INFO: Validation Results - Epoch: 10
+2025-12-07 10:14:53,399 DeMo.train INFO: mAP: 50.3%
+2025-12-07 10:14:53,400 DeMo.train INFO: CMC curve, Rank-1  :49.8%
+2025-12-07 10:14:53,400 DeMo.train INFO: CMC curve, Rank-5  :64.6%
+2025-12-07 10:14:53,400 DeMo.train INFO: CMC curve, Rank-10 :73.3%
+2025-12-07 10:14:53,400 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:14:54,842 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:14:54,843 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:14:54,843 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:15:06,325 DeMo.train INFO: Validation Results - Epoch: 10
+2025-12-07 10:15:06,326 DeMo.train INFO: mAP: 48.9%
+2025-12-07 10:15:06,326 DeMo.train INFO: CMC curve, Rank-1  :50.1%
+2025-12-07 10:15:06,326 DeMo.train INFO: CMC curve, Rank-5  :63.0%
+2025-12-07 10:15:06,326 DeMo.train INFO: CMC curve, Rank-10 :69.5%
+2025-12-07 10:15:06,326 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:15:06,779 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:15:06,779 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:15:06,779 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:15:17,784 DeMo.train INFO: Validation Results - Epoch: 10
+2025-12-07 10:15:17,786 DeMo.train INFO: mAP: 53.3%
+2025-12-07 10:15:17,787 DeMo.train INFO: CMC curve, Rank-1  :52.4%
+2025-12-07 10:15:17,789 DeMo.train INFO: CMC curve, Rank-5  :65.9%
+2025-12-07 10:15:17,789 DeMo.train INFO: CMC curve, Rank-10 :73.6%
+2025-12-07 10:15:17,789 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:15:18,364 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:15:18,365 DeMo.train INFO: Best mAP: 57.2%
+2025-12-07 10:15:18,366 DeMo.train INFO: Best Rank-1: 57.7%
+2025-12-07 10:15:18,367 DeMo.train INFO: Best Rank-5: 68.2%
+2025-12-07 10:15:18,367 DeMo.train INFO: Best Rank-10: 75.2%
+2025-12-07 10:15:18,367 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:15:30,341 DeMo.train INFO: Epoch[11] Iteration[10/54] Loss: 0.541, Acc: 0.991, Base Lr: 3.50e-04
+2025-12-07 10:15:34,014 DeMo.train INFO: Epoch[11] Iteration[20/54] Loss: 0.561, Acc: 0.984, Base Lr: 3.50e-04
+2025-12-07 10:15:36,666 DeMo.train INFO: Epoch[11] Iteration[30/54] Loss: 0.556, Acc: 0.988, Base Lr: 3.50e-04
+2025-12-07 10:15:39,258 DeMo.train INFO: Epoch[11] Iteration[40/54] Loss: 0.559, Acc: 0.989, Base Lr: 3.50e-04
+2025-12-07 10:15:41,850 DeMo.train INFO: Epoch[11] Iteration[50/54] Loss: 0.562, Acc: 0.987, Base Lr: 3.50e-04
+2025-12-07 10:15:42,755 DeMo.train INFO: Epoch 11 done. Time per batch: 0.460[s] Speed: 139.1[samples/s]
+2025-12-07 10:15:42,757 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:15:42,757 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:15:42,757 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:15:54,837 DeMo.train INFO: Validation Results - Epoch: 11
+2025-12-07 10:15:54,838 DeMo.train INFO: mAP: 55.3%
+2025-12-07 10:15:54,838 DeMo.train INFO: CMC curve, Rank-1  :54.9%
+2025-12-07 10:15:54,838 DeMo.train INFO: CMC curve, Rank-5  :68.1%
+2025-12-07 10:15:54,838 DeMo.train INFO: CMC curve, Rank-10 :75.1%
+2025-12-07 10:15:54,838 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:15:56,743 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:15:56,744 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:15:56,744 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:16:07,933 DeMo.train INFO: Validation Results - Epoch: 11
+2025-12-07 10:16:07,933 DeMo.train INFO: mAP: 51.4%
+2025-12-07 10:16:07,933 DeMo.train INFO: CMC curve, Rank-1  :51.7%
+2025-12-07 10:16:07,933 DeMo.train INFO: CMC curve, Rank-5  :65.3%
+2025-12-07 10:16:07,933 DeMo.train INFO: CMC curve, Rank-10 :73.3%
+2025-12-07 10:16:07,934 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:16:08,261 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:16:08,262 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:16:08,262 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:16:19,840 DeMo.train INFO: Validation Results - Epoch: 11
+2025-12-07 10:16:19,841 DeMo.train INFO: mAP: 56.6%
+2025-12-07 10:16:19,841 DeMo.train INFO: CMC curve, Rank-1  :56.3%
+2025-12-07 10:16:19,841 DeMo.train INFO: CMC curve, Rank-5  :67.3%
+2025-12-07 10:16:19,841 DeMo.train INFO: CMC curve, Rank-10 :76.0%
+2025-12-07 10:16:19,841 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:16:20,188 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:16:20,188 DeMo.train INFO: Best mAP: 57.2%
+2025-12-07 10:16:20,188 DeMo.train INFO: Best Rank-1: 57.7%
+2025-12-07 10:16:20,188 DeMo.train INFO: Best Rank-5: 68.2%
+2025-12-07 10:16:20,188 DeMo.train INFO: Best Rank-10: 75.2%
+2025-12-07 10:16:20,188 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:16:27,922 DeMo.train INFO: Epoch[12] Iteration[10/54] Loss: 0.538, Acc: 0.994, Base Lr: 3.50e-04
+2025-12-07 10:16:30,576 DeMo.train INFO: Epoch[12] Iteration[20/54] Loss: 0.551, Acc: 0.995, Base Lr: 3.50e-04
+2025-12-07 10:16:33,214 DeMo.train INFO: Epoch[12] Iteration[30/54] Loss: 0.540, Acc: 0.996, Base Lr: 3.50e-04
+2025-12-07 10:16:35,847 DeMo.train INFO: Epoch[12] Iteration[40/54] Loss: 0.544, Acc: 0.997, Base Lr: 3.50e-04
+2025-12-07 10:16:38,469 DeMo.train INFO: Epoch[12] Iteration[50/54] Loss: 0.546, Acc: 0.997, Base Lr: 3.50e-04
+2025-12-07 10:16:39,424 DeMo.train INFO: Epoch 12 done. Time per batch: 0.363[s] Speed: 176.3[samples/s]
+2025-12-07 10:16:39,428 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:16:39,430 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:16:39,430 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:16:52,871 DeMo.train INFO: Validation Results - Epoch: 12
+2025-12-07 10:16:52,871 DeMo.train INFO: mAP: 51.9%
+2025-12-07 10:16:52,871 DeMo.train INFO: CMC curve, Rank-1  :52.5%
+2025-12-07 10:16:52,871 DeMo.train INFO: CMC curve, Rank-5  :65.1%
+2025-12-07 10:16:52,871 DeMo.train INFO: CMC curve, Rank-10 :72.8%
+2025-12-07 10:16:52,871 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:16:55,388 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:16:55,389 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:16:55,389 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:17:07,018 DeMo.train INFO: Validation Results - Epoch: 12
+2025-12-07 10:17:07,018 DeMo.train INFO: mAP: 52.5%
+2025-12-07 10:17:07,018 DeMo.train INFO: CMC curve, Rank-1  :56.2%
+2025-12-07 10:17:07,019 DeMo.train INFO: CMC curve, Rank-5  :70.1%
+2025-12-07 10:17:07,019 DeMo.train INFO: CMC curve, Rank-10 :76.3%
+2025-12-07 10:17:07,019 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:17:07,501 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:17:07,501 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:17:07,501 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:17:18,991 DeMo.train INFO: Validation Results - Epoch: 12
+2025-12-07 10:17:18,991 DeMo.train INFO: mAP: 56.1%
+2025-12-07 10:17:18,991 DeMo.train INFO: CMC curve, Rank-1  :58.5%
+2025-12-07 10:17:18,991 DeMo.train INFO: CMC curve, Rank-5  :69.9%
+2025-12-07 10:17:18,991 DeMo.train INFO: CMC curve, Rank-10 :76.6%
+2025-12-07 10:17:18,991 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:17:19,413 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:17:19,414 DeMo.train INFO: Best mAP: 57.2%
+2025-12-07 10:17:19,414 DeMo.train INFO: Best Rank-1: 57.7%
+2025-12-07 10:17:19,414 DeMo.train INFO: Best Rank-5: 68.2%
+2025-12-07 10:17:19,414 DeMo.train INFO: Best Rank-10: 75.2%
+2025-12-07 10:17:19,414 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:17:30,004 DeMo.train INFO: Epoch[13] Iteration[10/54] Loss: 0.535, Acc: 0.998, Base Lr: 3.50e-04
+2025-12-07 10:17:35,692 DeMo.train INFO: Epoch[13] Iteration[20/54] Loss: 0.558, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:17:41,693 DeMo.train INFO: Epoch[13] Iteration[30/54] Loss: 0.551, Acc: 0.998, Base Lr: 3.50e-04
+2025-12-07 10:17:44,328 DeMo.train INFO: Epoch[13] Iteration[40/54] Loss: 0.550, Acc: 0.997, Base Lr: 3.50e-04
+2025-12-07 10:17:50,255 DeMo.train INFO: Epoch[13] Iteration[50/54] Loss: 0.544, Acc: 0.997, Base Lr: 3.50e-04
+2025-12-07 10:17:51,169 DeMo.train INFO: Epoch 13 done. Time per batch: 0.599[s] Speed: 106.8[samples/s]
+2025-12-07 10:17:51,172 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:17:51,173 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:17:51,174 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:18:15,638 DeMo.train INFO: Validation Results - Epoch: 13
+2025-12-07 10:18:15,638 DeMo.train INFO: mAP: 60.7%
+2025-12-07 10:18:15,638 DeMo.train INFO: CMC curve, Rank-1  :61.7%
+2025-12-07 10:18:15,638 DeMo.train INFO: CMC curve, Rank-5  :75.8%
+2025-12-07 10:18:15,638 DeMo.train INFO: CMC curve, Rank-10 :81.6%
+2025-12-07 10:18:15,638 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:18:18,044 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:18:18,044 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:18:18,044 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:18:29,790 DeMo.train INFO: Validation Results - Epoch: 13
+2025-12-07 10:18:29,790 DeMo.train INFO: mAP: 59.4%
+2025-12-07 10:18:29,790 DeMo.train INFO: CMC curve, Rank-1  :62.7%
+2025-12-07 10:18:29,790 DeMo.train INFO: CMC curve, Rank-5  :74.9%
+2025-12-07 10:18:29,790 DeMo.train INFO: CMC curve, Rank-10 :82.2%
+2025-12-07 10:18:29,790 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:18:30,646 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:18:30,646 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:18:30,646 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:18:42,258 DeMo.train INFO: Validation Results - Epoch: 13
+2025-12-07 10:18:42,259 DeMo.train INFO: mAP: 64.6%
+2025-12-07 10:18:42,259 DeMo.train INFO: CMC curve, Rank-1  :66.7%
+2025-12-07 10:18:42,259 DeMo.train INFO: CMC curve, Rank-5  :77.2%
+2025-12-07 10:18:42,259 DeMo.train INFO: CMC curve, Rank-10 :83.4%
+2025-12-07 10:18:42,259 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:18:59,651 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:18:59,651 DeMo.train INFO: Best mAP: 64.6%
+2025-12-07 10:18:59,651 DeMo.train INFO: Best Rank-1: 66.7%
+2025-12-07 10:18:59,652 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:18:59,652 DeMo.train INFO: Best Rank-10: 83.4%
+2025-12-07 10:18:59,652 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:19:06,490 DeMo.train INFO: Epoch[14] Iteration[10/54] Loss: 0.556, Acc: 0.995, Base Lr: 3.50e-04
+2025-12-07 10:19:09,141 DeMo.train INFO: Epoch[14] Iteration[20/54] Loss: 0.528, Acc: 0.996, Base Lr: 3.50e-04
+2025-12-07 10:19:11,786 DeMo.train INFO: Epoch[14] Iteration[30/54] Loss: 0.533, Acc: 0.997, Base Lr: 3.50e-04
+2025-12-07 10:19:14,438 DeMo.train INFO: Epoch[14] Iteration[40/54] Loss: 0.533, Acc: 0.997, Base Lr: 3.50e-04
+2025-12-07 10:19:17,085 DeMo.train INFO: Epoch[14] Iteration[50/54] Loss: 0.535, Acc: 0.998, Base Lr: 3.50e-04
+2025-12-07 10:19:18,034 DeMo.train INFO: Epoch 14 done. Time per batch: 0.347[s] Speed: 184.5[samples/s]
+2025-12-07 10:19:18,037 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:19:18,037 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:19:18,038 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:19:35,924 DeMo.train INFO: Validation Results - Epoch: 14
+2025-12-07 10:19:35,924 DeMo.train INFO: mAP: 57.6%
+2025-12-07 10:19:35,924 DeMo.train INFO: CMC curve, Rank-1  :61.5%
+2025-12-07 10:19:35,924 DeMo.train INFO: CMC curve, Rank-5  :71.3%
+2025-12-07 10:19:35,925 DeMo.train INFO: CMC curve, Rank-10 :78.0%
+2025-12-07 10:19:35,925 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:19:37,984 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:19:37,984 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:19:37,984 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:19:49,580 DeMo.train INFO: Validation Results - Epoch: 14
+2025-12-07 10:19:49,581 DeMo.train INFO: mAP: 53.1%
+2025-12-07 10:19:49,581 DeMo.train INFO: CMC curve, Rank-1  :54.3%
+2025-12-07 10:19:49,581 DeMo.train INFO: CMC curve, Rank-5  :68.9%
+2025-12-07 10:19:49,581 DeMo.train INFO: CMC curve, Rank-10 :75.5%
+2025-12-07 10:19:49,581 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:19:49,996 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:19:49,996 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:19:49,996 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:20:01,559 DeMo.train INFO: Validation Results - Epoch: 14
+2025-12-07 10:20:01,560 DeMo.train INFO: mAP: 59.3%
+2025-12-07 10:20:01,560 DeMo.train INFO: CMC curve, Rank-1  :60.5%
+2025-12-07 10:20:01,560 DeMo.train INFO: CMC curve, Rank-5  :72.0%
+2025-12-07 10:20:01,560 DeMo.train INFO: CMC curve, Rank-10 :78.0%
+2025-12-07 10:20:01,560 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:20:01,933 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:20:01,934 DeMo.train INFO: Best mAP: 64.6%
+2025-12-07 10:20:01,934 DeMo.train INFO: Best Rank-1: 66.7%
+2025-12-07 10:20:01,934 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:20:01,934 DeMo.train INFO: Best Rank-10: 83.4%
+2025-12-07 10:20:01,934 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:20:13,634 DeMo.train INFO: Epoch[15] Iteration[10/54] Loss: 0.532, Acc: 0.998, Base Lr: 3.50e-04
+2025-12-07 10:20:17,496 DeMo.train INFO: Epoch[15] Iteration[20/54] Loss: 0.532, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:20:20,196 DeMo.train INFO: Epoch[15] Iteration[30/54] Loss: 0.526, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:20:22,857 DeMo.train INFO: Epoch[15] Iteration[40/54] Loss: 0.525, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:20:25,462 DeMo.train INFO: Epoch[15] Iteration[50/54] Loss: 0.522, Acc: 0.997, Base Lr: 3.50e-04
+2025-12-07 10:20:26,390 DeMo.train INFO: Epoch 15 done. Time per batch: 0.461[s] Speed: 138.7[samples/s]
+2025-12-07 10:20:26,391 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:20:26,391 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:20:26,391 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:20:37,074 DeMo.train INFO: Validation Results - Epoch: 15
+2025-12-07 10:20:37,074 DeMo.train INFO: mAP: 61.3%
+2025-12-07 10:20:37,074 DeMo.train INFO: CMC curve, Rank-1  :61.2%
+2025-12-07 10:20:37,075 DeMo.train INFO: CMC curve, Rank-5  :73.0%
+2025-12-07 10:20:37,075 DeMo.train INFO: CMC curve, Rank-10 :78.8%
+2025-12-07 10:20:37,075 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:20:38,857 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:20:38,857 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:20:38,857 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:20:50,584 DeMo.train INFO: Validation Results - Epoch: 15
+2025-12-07 10:20:50,585 DeMo.train INFO: mAP: 52.7%
+2025-12-07 10:20:50,585 DeMo.train INFO: CMC curve, Rank-1  :56.5%
+2025-12-07 10:20:50,585 DeMo.train INFO: CMC curve, Rank-5  :67.6%
+2025-12-07 10:20:50,585 DeMo.train INFO: CMC curve, Rank-10 :74.0%
+2025-12-07 10:20:50,585 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:20:50,887 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:20:50,887 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:20:50,887 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:21:01,751 DeMo.train INFO: Validation Results - Epoch: 15
+2025-12-07 10:21:01,752 DeMo.train INFO: mAP: 60.7%
+2025-12-07 10:21:01,752 DeMo.train INFO: CMC curve, Rank-1  :62.7%
+2025-12-07 10:21:01,752 DeMo.train INFO: CMC curve, Rank-5  :73.2%
+2025-12-07 10:21:01,752 DeMo.train INFO: CMC curve, Rank-10 :77.2%
+2025-12-07 10:21:01,752 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:21:02,574 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:21:02,574 DeMo.train INFO: Best mAP: 64.6%
+2025-12-07 10:21:02,574 DeMo.train INFO: Best Rank-1: 66.7%
+2025-12-07 10:21:02,574 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:21:02,574 DeMo.train INFO: Best Rank-10: 83.4%
+2025-12-07 10:21:02,574 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:21:08,902 DeMo.train INFO: Epoch[16] Iteration[10/54] Loss: 0.514, Acc: 0.998, Base Lr: 3.50e-04
+2025-12-07 10:21:11,527 DeMo.train INFO: Epoch[16] Iteration[20/54] Loss: 0.514, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:21:14,149 DeMo.train INFO: Epoch[16] Iteration[30/54] Loss: 0.507, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:21:16,840 DeMo.train INFO: Epoch[16] Iteration[40/54] Loss: 0.511, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:21:19,511 DeMo.train INFO: Epoch[16] Iteration[50/54] Loss: 0.514, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:21:20,436 DeMo.train INFO: Epoch 16 done. Time per batch: 0.337[s] Speed: 189.9[samples/s]
+2025-12-07 10:21:20,437 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:21:20,437 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:21:20,438 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:21:31,152 DeMo.train INFO: Validation Results - Epoch: 16
+2025-12-07 10:21:31,152 DeMo.train INFO: mAP: 57.0%
+2025-12-07 10:21:31,152 DeMo.train INFO: CMC curve, Rank-1  :57.3%
+2025-12-07 10:21:31,152 DeMo.train INFO: CMC curve, Rank-5  :71.7%
+2025-12-07 10:21:31,152 DeMo.train INFO: CMC curve, Rank-10 :77.5%
+2025-12-07 10:21:31,153 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:21:32,917 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:21:32,917 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:21:32,917 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:21:44,674 DeMo.train INFO: Validation Results - Epoch: 16
+2025-12-07 10:21:44,674 DeMo.train INFO: mAP: 54.1%
+2025-12-07 10:21:44,675 DeMo.train INFO: CMC curve, Rank-1  :56.1%
+2025-12-07 10:21:44,675 DeMo.train INFO: CMC curve, Rank-5  :69.7%
+2025-12-07 10:21:44,675 DeMo.train INFO: CMC curve, Rank-10 :76.6%
+2025-12-07 10:21:44,675 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:21:44,975 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:21:44,975 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:21:44,975 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:21:56,673 DeMo.train INFO: Validation Results - Epoch: 16
+2025-12-07 10:21:56,674 DeMo.train INFO: mAP: 60.0%
+2025-12-07 10:21:56,674 DeMo.train INFO: CMC curve, Rank-1  :63.4%
+2025-12-07 10:21:56,674 DeMo.train INFO: CMC curve, Rank-5  :73.8%
+2025-12-07 10:21:56,674 DeMo.train INFO: CMC curve, Rank-10 :80.0%
+2025-12-07 10:21:56,674 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:21:56,816 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:21:56,816 DeMo.train INFO: Best mAP: 64.6%
+2025-12-07 10:21:56,816 DeMo.train INFO: Best Rank-1: 66.7%
+2025-12-07 10:21:56,816 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:21:56,817 DeMo.train INFO: Best Rank-10: 83.4%
+2025-12-07 10:21:56,817 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:22:03,287 DeMo.train INFO: Epoch[17] Iteration[10/54] Loss: 0.508, Acc: 0.997, Base Lr: 3.50e-04
+2025-12-07 10:22:05,924 DeMo.train INFO: Epoch[17] Iteration[20/54] Loss: 0.505, Acc: 0.998, Base Lr: 3.50e-04
+2025-12-07 10:22:08,565 DeMo.train INFO: Epoch[17] Iteration[30/54] Loss: 0.509, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:22:11,186 DeMo.train INFO: Epoch[17] Iteration[40/54] Loss: 0.509, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:22:13,869 DeMo.train INFO: Epoch[17] Iteration[50/54] Loss: 0.507, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:22:14,791 DeMo.train INFO: Epoch 17 done. Time per batch: 0.339[s] Speed: 188.7[samples/s]
+2025-12-07 10:22:14,793 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:22:14,793 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:22:14,793 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:22:26,045 DeMo.train INFO: Validation Results - Epoch: 17
+2025-12-07 10:22:26,046 DeMo.train INFO: mAP: 54.4%
+2025-12-07 10:22:26,046 DeMo.train INFO: CMC curve, Rank-1  :53.1%
+2025-12-07 10:22:26,046 DeMo.train INFO: CMC curve, Rank-5  :67.3%
+2025-12-07 10:22:26,046 DeMo.train INFO: CMC curve, Rank-10 :74.9%
+2025-12-07 10:22:26,046 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:22:27,549 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:22:27,549 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:22:27,550 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:22:39,414 DeMo.train INFO: Validation Results - Epoch: 17
+2025-12-07 10:22:39,414 DeMo.train INFO: mAP: 50.6%
+2025-12-07 10:22:39,414 DeMo.train INFO: CMC curve, Rank-1  :51.1%
+2025-12-07 10:22:39,415 DeMo.train INFO: CMC curve, Rank-5  :64.8%
+2025-12-07 10:22:39,415 DeMo.train INFO: CMC curve, Rank-10 :71.9%
+2025-12-07 10:22:39,415 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:22:39,724 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:22:39,725 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:22:39,725 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:22:51,431 DeMo.train INFO: Validation Results - Epoch: 17
+2025-12-07 10:22:51,431 DeMo.train INFO: mAP: 55.9%
+2025-12-07 10:22:51,431 DeMo.train INFO: CMC curve, Rank-1  :55.1%
+2025-12-07 10:22:51,432 DeMo.train INFO: CMC curve, Rank-5  :69.6%
+2025-12-07 10:22:51,432 DeMo.train INFO: CMC curve, Rank-10 :75.5%
+2025-12-07 10:22:51,432 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:22:51,438 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:22:51,438 DeMo.train INFO: Best mAP: 64.6%
+2025-12-07 10:22:51,438 DeMo.train INFO: Best Rank-1: 66.7%
+2025-12-07 10:22:51,438 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:22:51,438 DeMo.train INFO: Best Rank-10: 83.4%
+2025-12-07 10:22:51,438 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:22:58,829 DeMo.train INFO: Epoch[18] Iteration[10/54] Loss: 0.499, Acc: 0.997, Base Lr: 3.50e-04
+2025-12-07 10:23:01,468 DeMo.train INFO: Epoch[18] Iteration[20/54] Loss: 0.493, Acc: 0.998, Base Lr: 3.50e-04
+2025-12-07 10:23:04,172 DeMo.train INFO: Epoch[18] Iteration[30/54] Loss: 0.493, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:23:06,807 DeMo.train INFO: Epoch[18] Iteration[40/54] Loss: 0.495, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:23:09,429 DeMo.train INFO: Epoch[18] Iteration[50/54] Loss: 0.493, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:23:10,369 DeMo.train INFO: Epoch 18 done. Time per batch: 0.357[s] Speed: 179.2[samples/s]
+2025-12-07 10:23:10,371 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:23:10,371 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:23:10,373 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:23:26,479 DeMo.train INFO: Validation Results - Epoch: 18
+2025-12-07 10:23:26,480 DeMo.train INFO: mAP: 52.9%
+2025-12-07 10:23:26,480 DeMo.train INFO: CMC curve, Rank-1  :51.4%
+2025-12-07 10:23:26,480 DeMo.train INFO: CMC curve, Rank-5  :66.1%
+2025-12-07 10:23:26,480 DeMo.train INFO: CMC curve, Rank-10 :74.4%
+2025-12-07 10:23:26,480 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:23:26,593 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:23:26,594 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:23:26,594 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:23:37,956 DeMo.train INFO: Validation Results - Epoch: 18
+2025-12-07 10:23:37,956 DeMo.train INFO: mAP: 51.6%
+2025-12-07 10:23:37,956 DeMo.train INFO: CMC curve, Rank-1  :52.8%
+2025-12-07 10:23:37,956 DeMo.train INFO: CMC curve, Rank-5  :67.8%
+2025-12-07 10:23:37,956 DeMo.train INFO: CMC curve, Rank-10 :75.4%
+2025-12-07 10:23:37,956 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:23:38,653 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:23:38,653 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:23:38,653 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:23:50,342 DeMo.train INFO: Validation Results - Epoch: 18
+2025-12-07 10:23:50,342 DeMo.train INFO: mAP: 56.4%
+2025-12-07 10:23:50,343 DeMo.train INFO: CMC curve, Rank-1  :57.1%
+2025-12-07 10:23:50,343 DeMo.train INFO: CMC curve, Rank-5  :70.7%
+2025-12-07 10:23:50,343 DeMo.train INFO: CMC curve, Rank-10 :78.1%
+2025-12-07 10:23:50,343 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:23:50,804 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:23:50,804 DeMo.train INFO: Best mAP: 64.6%
+2025-12-07 10:23:50,804 DeMo.train INFO: Best Rank-1: 66.7%
+2025-12-07 10:23:50,804 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:23:50,804 DeMo.train INFO: Best Rank-10: 83.4%
+2025-12-07 10:23:50,805 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:23:54,957 DeMo.train INFO: Epoch[19] Iteration[10/54] Loss: 0.487, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:23:58,166 DeMo.train INFO: Epoch[19] Iteration[20/54] Loss: 0.481, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:24:00,762 DeMo.train INFO: Epoch[19] Iteration[30/54] Loss: 0.480, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:24:03,410 DeMo.train INFO: Epoch[19] Iteration[40/54] Loss: 0.481, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:24:06,020 DeMo.train INFO: Epoch[19] Iteration[50/54] Loss: 0.484, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:24:06,943 DeMo.train INFO: Epoch 19 done. Time per batch: 0.304[s] Speed: 210.2[samples/s]
+2025-12-07 10:24:06,944 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:24:06,944 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:24:06,944 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:24:17,738 DeMo.train INFO: Validation Results - Epoch: 19
+2025-12-07 10:24:17,738 DeMo.train INFO: mAP: 59.6%
+2025-12-07 10:24:17,739 DeMo.train INFO: CMC curve, Rank-1  :60.9%
+2025-12-07 10:24:17,739 DeMo.train INFO: CMC curve, Rank-5  :75.0%
+2025-12-07 10:24:17,739 DeMo.train INFO: CMC curve, Rank-10 :81.1%
+2025-12-07 10:24:17,739 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:24:19,150 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:24:19,151 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:24:19,151 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:24:30,384 DeMo.train INFO: Validation Results - Epoch: 19
+2025-12-07 10:24:30,384 DeMo.train INFO: mAP: 54.1%
+2025-12-07 10:24:30,384 DeMo.train INFO: CMC curve, Rank-1  :55.5%
+2025-12-07 10:24:30,385 DeMo.train INFO: CMC curve, Rank-5  :69.6%
+2025-12-07 10:24:30,385 DeMo.train INFO: CMC curve, Rank-10 :75.4%
+2025-12-07 10:24:30,385 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:24:31,232 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:24:31,232 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:24:31,232 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:24:42,960 DeMo.train INFO: Validation Results - Epoch: 19
+2025-12-07 10:24:42,960 DeMo.train INFO: mAP: 60.3%
+2025-12-07 10:24:42,960 DeMo.train INFO: CMC curve, Rank-1  :60.8%
+2025-12-07 10:24:42,960 DeMo.train INFO: CMC curve, Rank-5  :74.3%
+2025-12-07 10:24:42,960 DeMo.train INFO: CMC curve, Rank-10 :80.3%
+2025-12-07 10:24:42,960 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:24:43,294 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:24:43,295 DeMo.train INFO: Best mAP: 64.6%
+2025-12-07 10:24:43,295 DeMo.train INFO: Best Rank-1: 66.7%
+2025-12-07 10:24:43,295 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:24:43,295 DeMo.train INFO: Best Rank-10: 83.4%
+2025-12-07 10:24:43,295 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:24:49,314 DeMo.train INFO: Epoch[20] Iteration[10/54] Loss: 0.487, Acc: 0.997, Base Lr: 3.50e-04
+2025-12-07 10:24:51,941 DeMo.train INFO: Epoch[20] Iteration[20/54] Loss: 0.482, Acc: 0.998, Base Lr: 3.50e-04
+2025-12-07 10:24:54,538 DeMo.train INFO: Epoch[20] Iteration[30/54] Loss: 0.479, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:24:57,150 DeMo.train INFO: Epoch[20] Iteration[40/54] Loss: 0.484, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:24:59,825 DeMo.train INFO: Epoch[20] Iteration[50/54] Loss: 0.486, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:25:00,770 DeMo.train INFO: Epoch 20 done. Time per batch: 0.330[s] Speed: 194.1[samples/s]
+2025-12-07 10:25:00,771 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:25:00,771 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:25:00,772 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:25:11,537 DeMo.train INFO: Validation Results - Epoch: 20
+2025-12-07 10:25:11,537 DeMo.train INFO: mAP: 51.8%
+2025-12-07 10:25:11,538 DeMo.train INFO: CMC curve, Rank-1  :50.7%
+2025-12-07 10:25:11,538 DeMo.train INFO: CMC curve, Rank-5  :65.4%
+2025-12-07 10:25:11,538 DeMo.train INFO: CMC curve, Rank-10 :73.2%
+2025-12-07 10:25:11,538 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:25:11,640 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:25:11,640 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:25:11,640 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:25:23,284 DeMo.train INFO: Validation Results - Epoch: 20
+2025-12-07 10:25:23,284 DeMo.train INFO: mAP: 48.2%
+2025-12-07 10:25:23,285 DeMo.train INFO: CMC curve, Rank-1  :51.2%
+2025-12-07 10:25:23,285 DeMo.train INFO: CMC curve, Rank-5  :64.0%
+2025-12-07 10:25:23,285 DeMo.train INFO: CMC curve, Rank-10 :71.9%
+2025-12-07 10:25:23,285 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:25:23,470 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:25:23,471 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:25:23,471 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:25:35,339 DeMo.train INFO: Validation Results - Epoch: 20
+2025-12-07 10:25:35,339 DeMo.train INFO: mAP: 53.5%
+2025-12-07 10:25:35,340 DeMo.train INFO: CMC curve, Rank-1  :54.7%
+2025-12-07 10:25:35,340 DeMo.train INFO: CMC curve, Rank-5  :67.6%
+2025-12-07 10:25:35,340 DeMo.train INFO: CMC curve, Rank-10 :72.8%
+2025-12-07 10:25:35,340 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:25:35,447 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:25:35,447 DeMo.train INFO: Best mAP: 64.6%
+2025-12-07 10:25:35,447 DeMo.train INFO: Best Rank-1: 66.7%
+2025-12-07 10:25:35,447 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:25:35,447 DeMo.train INFO: Best Rank-10: 83.4%
+2025-12-07 10:25:35,447 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:25:42,054 DeMo.train INFO: Epoch[21] Iteration[10/54] Loss: 0.498, Acc: 0.998, Base Lr: 3.50e-04
+2025-12-07 10:25:44,733 DeMo.train INFO: Epoch[21] Iteration[20/54] Loss: 0.499, Acc: 0.998, Base Lr: 3.50e-04
+2025-12-07 10:25:47,360 DeMo.train INFO: Epoch[21] Iteration[30/54] Loss: 0.492, Acc: 0.998, Base Lr: 3.50e-04
+2025-12-07 10:25:49,970 DeMo.train INFO: Epoch[21] Iteration[40/54] Loss: 0.491, Acc: 0.998, Base Lr: 3.50e-04
+2025-12-07 10:25:52,591 DeMo.train INFO: Epoch[21] Iteration[50/54] Loss: 0.488, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:25:53,502 DeMo.train INFO: Epoch 21 done. Time per batch: 0.341[s] Speed: 187.9[samples/s]
+2025-12-07 10:25:53,504 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:25:53,504 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:25:53,504 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:26:04,676 DeMo.train INFO: Validation Results - Epoch: 21
+2025-12-07 10:26:04,677 DeMo.train INFO: mAP: 61.6%
+2025-12-07 10:26:04,677 DeMo.train INFO: CMC curve, Rank-1  :64.5%
+2025-12-07 10:26:04,677 DeMo.train INFO: CMC curve, Rank-5  :78.9%
+2025-12-07 10:26:04,677 DeMo.train INFO: CMC curve, Rank-10 :84.3%
+2025-12-07 10:26:04,677 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:26:07,123 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:26:07,124 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:26:07,124 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:26:18,833 DeMo.train INFO: Validation Results - Epoch: 21
+2025-12-07 10:26:18,833 DeMo.train INFO: mAP: 58.0%
+2025-12-07 10:26:18,833 DeMo.train INFO: CMC curve, Rank-1  :60.3%
+2025-12-07 10:26:18,833 DeMo.train INFO: CMC curve, Rank-5  :72.6%
+2025-12-07 10:26:18,833 DeMo.train INFO: CMC curve, Rank-10 :79.1%
+2025-12-07 10:26:18,834 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:26:19,105 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:26:19,105 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:26:19,105 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:26:31,001 DeMo.train INFO: Validation Results - Epoch: 21
+2025-12-07 10:26:31,001 DeMo.train INFO: mAP: 63.8%
+2025-12-07 10:26:31,002 DeMo.train INFO: CMC curve, Rank-1  :65.9%
+2025-12-07 10:26:31,002 DeMo.train INFO: CMC curve, Rank-5  :78.2%
+2025-12-07 10:26:31,002 DeMo.train INFO: CMC curve, Rank-10 :82.8%
+2025-12-07 10:26:31,002 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:26:31,095 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:26:31,095 DeMo.train INFO: Best mAP: 64.6%
+2025-12-07 10:26:31,095 DeMo.train INFO: Best Rank-1: 66.7%
+2025-12-07 10:26:31,095 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:26:31,095 DeMo.train INFO: Best Rank-10: 83.4%
+2025-12-07 10:26:31,096 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:26:38,945 DeMo.train INFO: Epoch[22] Iteration[10/54] Loss: 0.476, Acc: 0.998, Base Lr: 3.50e-04
+2025-12-07 10:26:42,042 DeMo.train INFO: Epoch[22] Iteration[20/54] Loss: 0.477, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:26:44,651 DeMo.train INFO: Epoch[22] Iteration[30/54] Loss: 0.475, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:26:47,286 DeMo.train INFO: Epoch[22] Iteration[40/54] Loss: 0.473, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:26:49,903 DeMo.train INFO: Epoch[22] Iteration[50/54] Loss: 0.473, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:26:50,870 DeMo.train INFO: Epoch 22 done. Time per batch: 0.373[s] Speed: 171.5[samples/s]
+2025-12-07 10:26:50,872 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:26:50,872 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:26:50,872 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:27:02,657 DeMo.train INFO: Validation Results - Epoch: 22
+2025-12-07 10:27:02,658 DeMo.train INFO: mAP: 62.0%
+2025-12-07 10:27:02,658 DeMo.train INFO: CMC curve, Rank-1  :63.3%
+2025-12-07 10:27:02,658 DeMo.train INFO: CMC curve, Rank-5  :78.5%
+2025-12-07 10:27:02,658 DeMo.train INFO: CMC curve, Rank-10 :84.3%
+2025-12-07 10:27:02,658 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:27:05,288 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:27:05,289 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:27:05,289 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:27:16,453 DeMo.train INFO: Validation Results - Epoch: 22
+2025-12-07 10:27:16,453 DeMo.train INFO: mAP: 57.9%
+2025-12-07 10:27:16,453 DeMo.train INFO: CMC curve, Rank-1  :61.0%
+2025-12-07 10:27:16,453 DeMo.train INFO: CMC curve, Rank-5  :73.8%
+2025-12-07 10:27:16,453 DeMo.train INFO: CMC curve, Rank-10 :78.8%
+2025-12-07 10:27:16,453 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:27:17,131 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:27:17,131 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:27:17,131 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:27:28,509 DeMo.train INFO: Validation Results - Epoch: 22
+2025-12-07 10:27:28,510 DeMo.train INFO: mAP: 62.6%
+2025-12-07 10:27:28,510 DeMo.train INFO: CMC curve, Rank-1  :65.1%
+2025-12-07 10:27:28,510 DeMo.train INFO: CMC curve, Rank-5  :77.3%
+2025-12-07 10:27:28,510 DeMo.train INFO: CMC curve, Rank-10 :80.9%
+2025-12-07 10:27:28,510 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:27:29,294 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:27:29,295 DeMo.train INFO: Best mAP: 64.6%
+2025-12-07 10:27:29,295 DeMo.train INFO: Best Rank-1: 66.7%
+2025-12-07 10:27:29,295 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:27:29,295 DeMo.train INFO: Best Rank-10: 83.4%
+2025-12-07 10:27:29,295 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:27:36,763 DeMo.train INFO: Epoch[23] Iteration[10/54] Loss: 0.490, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:27:39,388 DeMo.train INFO: Epoch[23] Iteration[20/54] Loss: 0.485, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:27:42,053 DeMo.train INFO: Epoch[23] Iteration[30/54] Loss: 0.485, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:27:44,692 DeMo.train INFO: Epoch[23] Iteration[40/54] Loss: 0.484, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:27:47,313 DeMo.train INFO: Epoch[23] Iteration[50/54] Loss: 0.483, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:27:48,224 DeMo.train INFO: Epoch 23 done. Time per batch: 0.357[s] Speed: 179.2[samples/s]
+2025-12-07 10:27:48,226 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:27:48,226 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:27:48,226 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:27:59,750 DeMo.train INFO: Validation Results - Epoch: 23
+2025-12-07 10:27:59,751 DeMo.train INFO: mAP: 61.2%
+2025-12-07 10:27:59,751 DeMo.train INFO: CMC curve, Rank-1  :62.0%
+2025-12-07 10:27:59,751 DeMo.train INFO: CMC curve, Rank-5  :74.5%
+2025-12-07 10:27:59,751 DeMo.train INFO: CMC curve, Rank-10 :81.7%
+2025-12-07 10:27:59,751 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:28:00,559 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:28:00,559 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:28:00,559 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:28:11,789 DeMo.train INFO: Validation Results - Epoch: 23
+2025-12-07 10:28:11,789 DeMo.train INFO: mAP: 56.3%
+2025-12-07 10:28:11,789 DeMo.train INFO: CMC curve, Rank-1  :57.3%
+2025-12-07 10:28:11,789 DeMo.train INFO: CMC curve, Rank-5  :73.3%
+2025-12-07 10:28:11,790 DeMo.train INFO: CMC curve, Rank-10 :80.0%
+2025-12-07 10:28:11,790 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:28:12,405 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:28:12,406 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:28:12,406 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:28:23,287 DeMo.train INFO: Validation Results - Epoch: 23
+2025-12-07 10:28:23,287 DeMo.train INFO: mAP: 61.5%
+2025-12-07 10:28:23,287 DeMo.train INFO: CMC curve, Rank-1  :63.8%
+2025-12-07 10:28:23,287 DeMo.train INFO: CMC curve, Rank-5  :77.3%
+2025-12-07 10:28:23,287 DeMo.train INFO: CMC curve, Rank-10 :82.5%
+2025-12-07 10:28:23,287 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:28:23,483 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:28:23,483 DeMo.train INFO: Best mAP: 64.6%
+2025-12-07 10:28:23,483 DeMo.train INFO: Best Rank-1: 66.7%
+2025-12-07 10:28:23,483 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:28:23,483 DeMo.train INFO: Best Rank-10: 83.4%
+2025-12-07 10:28:23,483 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:28:30,714 DeMo.train INFO: Epoch[24] Iteration[10/54] Loss: 0.499, Acc: 0.998, Base Lr: 3.50e-04
+2025-12-07 10:28:33,341 DeMo.train INFO: Epoch[24] Iteration[20/54] Loss: 0.491, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:28:35,956 DeMo.train INFO: Epoch[24] Iteration[30/54] Loss: 0.488, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:28:38,636 DeMo.train INFO: Epoch[24] Iteration[40/54] Loss: 0.483, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:28:41,522 DeMo.train INFO: Epoch[24] Iteration[50/54] Loss: 0.484, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:28:42,438 DeMo.train INFO: Epoch 24 done. Time per batch: 0.358[s] Speed: 178.9[samples/s]
+2025-12-07 10:28:42,440 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:28:42,440 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:28:42,440 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:28:53,032 DeMo.train INFO: Validation Results - Epoch: 24
+2025-12-07 10:28:53,032 DeMo.train INFO: mAP: 61.4%
+2025-12-07 10:28:53,032 DeMo.train INFO: CMC curve, Rank-1  :61.8%
+2025-12-07 10:28:53,032 DeMo.train INFO: CMC curve, Rank-5  :74.8%
+2025-12-07 10:28:53,032 DeMo.train INFO: CMC curve, Rank-10 :81.7%
+2025-12-07 10:28:53,032 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:28:54,776 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:28:54,776 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:28:54,776 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:29:06,328 DeMo.train INFO: Validation Results - Epoch: 24
+2025-12-07 10:29:06,328 DeMo.train INFO: mAP: 58.4%
+2025-12-07 10:29:06,329 DeMo.train INFO: CMC curve, Rank-1  :62.1%
+2025-12-07 10:29:06,329 DeMo.train INFO: CMC curve, Rank-5  :75.8%
+2025-12-07 10:29:06,329 DeMo.train INFO: CMC curve, Rank-10 :81.8%
+2025-12-07 10:29:06,329 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:29:06,812 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:29:06,812 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:29:06,812 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:29:17,794 DeMo.train INFO: Validation Results - Epoch: 24
+2025-12-07 10:29:17,794 DeMo.train INFO: mAP: 63.3%
+2025-12-07 10:29:17,795 DeMo.train INFO: CMC curve, Rank-1  :65.8%
+2025-12-07 10:29:17,795 DeMo.train INFO: CMC curve, Rank-5  :77.0%
+2025-12-07 10:29:17,795 DeMo.train INFO: CMC curve, Rank-10 :82.7%
+2025-12-07 10:29:17,795 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:29:17,937 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:29:17,937 DeMo.train INFO: Best mAP: 64.6%
+2025-12-07 10:29:17,937 DeMo.train INFO: Best Rank-1: 66.7%
+2025-12-07 10:29:17,937 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:29:17,937 DeMo.train INFO: Best Rank-10: 83.4%
+2025-12-07 10:29:17,937 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:29:24,215 DeMo.train INFO: Epoch[25] Iteration[10/54] Loss: 0.469, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:29:26,845 DeMo.train INFO: Epoch[25] Iteration[20/54] Loss: 0.469, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:29:29,444 DeMo.train INFO: Epoch[25] Iteration[30/54] Loss: 0.470, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:29:32,067 DeMo.train INFO: Epoch[25] Iteration[40/54] Loss: 0.471, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:29:34,727 DeMo.train INFO: Epoch[25] Iteration[50/54] Loss: 0.472, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:29:35,657 DeMo.train INFO: Epoch 25 done. Time per batch: 0.334[s] Speed: 191.4[samples/s]
+2025-12-07 10:29:35,659 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:29:35,661 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:29:35,661 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:29:50,748 DeMo.train INFO: Validation Results - Epoch: 25
+2025-12-07 10:29:50,748 DeMo.train INFO: mAP: 62.6%
+2025-12-07 10:29:50,749 DeMo.train INFO: CMC curve, Rank-1  :62.9%
+2025-12-07 10:29:50,749 DeMo.train INFO: CMC curve, Rank-5  :75.8%
+2025-12-07 10:29:50,749 DeMo.train INFO: CMC curve, Rank-10 :82.7%
+2025-12-07 10:29:50,749 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:29:51,055 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:29:51,055 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:29:51,055 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:30:02,440 DeMo.train INFO: Validation Results - Epoch: 25
+2025-12-07 10:30:02,440 DeMo.train INFO: mAP: 58.3%
+2025-12-07 10:30:02,440 DeMo.train INFO: CMC curve, Rank-1  :61.4%
+2025-12-07 10:30:02,440 DeMo.train INFO: CMC curve, Rank-5  :75.2%
+2025-12-07 10:30:02,440 DeMo.train INFO: CMC curve, Rank-10 :81.2%
+2025-12-07 10:30:02,441 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:30:03,134 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:30:03,134 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:30:03,134 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:30:14,777 DeMo.train INFO: Validation Results - Epoch: 25
+2025-12-07 10:30:14,777 DeMo.train INFO: mAP: 63.1%
+2025-12-07 10:30:14,777 DeMo.train INFO: CMC curve, Rank-1  :66.1%
+2025-12-07 10:30:14,777 DeMo.train INFO: CMC curve, Rank-5  :77.3%
+2025-12-07 10:30:14,777 DeMo.train INFO: CMC curve, Rank-10 :82.7%
+2025-12-07 10:30:14,778 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:30:15,330 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:30:15,330 DeMo.train INFO: Best mAP: 64.6%
+2025-12-07 10:30:15,330 DeMo.train INFO: Best Rank-1: 66.7%
+2025-12-07 10:30:15,331 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:30:15,331 DeMo.train INFO: Best Rank-10: 83.4%
+2025-12-07 10:30:15,331 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:30:19,432 DeMo.train INFO: Epoch[26] Iteration[10/54] Loss: 0.468, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:30:22,124 DeMo.train INFO: Epoch[26] Iteration[20/54] Loss: 0.467, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:30:24,726 DeMo.train INFO: Epoch[26] Iteration[30/54] Loss: 0.467, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:30:27,347 DeMo.train INFO: Epoch[26] Iteration[40/54] Loss: 0.466, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:30:29,947 DeMo.train INFO: Epoch[26] Iteration[50/54] Loss: 0.470, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:30:30,862 DeMo.train INFO: Epoch 26 done. Time per batch: 0.293[s] Speed: 218.4[samples/s]
+2025-12-07 10:30:30,863 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:30:30,863 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:30:30,864 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:30:42,527 DeMo.train INFO: Validation Results - Epoch: 26
+2025-12-07 10:30:42,528 DeMo.train INFO: mAP: 58.7%
+2025-12-07 10:30:42,528 DeMo.train INFO: CMC curve, Rank-1  :57.4%
+2025-12-07 10:30:42,528 DeMo.train INFO: CMC curve, Rank-5  :69.9%
+2025-12-07 10:30:42,528 DeMo.train INFO: CMC curve, Rank-10 :76.0%
+2025-12-07 10:30:42,528 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:30:43,641 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:30:43,642 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:30:43,642 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:30:55,184 DeMo.train INFO: Validation Results - Epoch: 26
+2025-12-07 10:30:55,184 DeMo.train INFO: mAP: 53.7%
+2025-12-07 10:30:55,184 DeMo.train INFO: CMC curve, Rank-1  :57.3%
+2025-12-07 10:30:55,184 DeMo.train INFO: CMC curve, Rank-5  :69.3%
+2025-12-07 10:30:55,184 DeMo.train INFO: CMC curve, Rank-10 :74.6%
+2025-12-07 10:30:55,184 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:30:55,744 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:30:55,745 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:30:55,745 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:31:06,653 DeMo.train INFO: Validation Results - Epoch: 26
+2025-12-07 10:31:06,653 DeMo.train INFO: mAP: 59.1%
+2025-12-07 10:31:06,653 DeMo.train INFO: CMC curve, Rank-1  :59.4%
+2025-12-07 10:31:06,653 DeMo.train INFO: CMC curve, Rank-5  :70.3%
+2025-12-07 10:31:06,654 DeMo.train INFO: CMC curve, Rank-10 :75.7%
+2025-12-07 10:31:06,654 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:31:06,722 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:31:06,722 DeMo.train INFO: Best mAP: 64.6%
+2025-12-07 10:31:06,722 DeMo.train INFO: Best Rank-1: 66.7%
+2025-12-07 10:31:06,722 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:31:06,722 DeMo.train INFO: Best Rank-10: 83.4%
+2025-12-07 10:31:06,723 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:31:14,491 DeMo.train INFO: Epoch[27] Iteration[10/54] Loss: 0.496, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:31:17,124 DeMo.train INFO: Epoch[27] Iteration[20/54] Loss: 0.500, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:31:19,754 DeMo.train INFO: Epoch[27] Iteration[30/54] Loss: 0.497, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:31:22,365 DeMo.train INFO: Epoch[27] Iteration[40/54] Loss: 0.493, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:31:25,023 DeMo.train INFO: Epoch[27] Iteration[50/54] Loss: 0.492, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:31:25,985 DeMo.train INFO: Epoch 27 done. Time per batch: 0.363[s] Speed: 176.1[samples/s]
+2025-12-07 10:31:25,987 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:31:25,987 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:31:25,987 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:31:37,286 DeMo.train INFO: Validation Results - Epoch: 27
+2025-12-07 10:31:37,287 DeMo.train INFO: mAP: 59.8%
+2025-12-07 10:31:37,287 DeMo.train INFO: CMC curve, Rank-1  :60.4%
+2025-12-07 10:31:37,287 DeMo.train INFO: CMC curve, Rank-5  :72.7%
+2025-12-07 10:31:37,287 DeMo.train INFO: CMC curve, Rank-10 :80.5%
+2025-12-07 10:31:37,287 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:31:39,317 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:31:39,317 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:31:39,317 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:31:50,916 DeMo.train INFO: Validation Results - Epoch: 27
+2025-12-07 10:31:50,917 DeMo.train INFO: mAP: 56.1%
+2025-12-07 10:31:50,919 DeMo.train INFO: CMC curve, Rank-1  :56.2%
+2025-12-07 10:31:50,920 DeMo.train INFO: CMC curve, Rank-5  :69.1%
+2025-12-07 10:31:50,920 DeMo.train INFO: CMC curve, Rank-10 :76.0%
+2025-12-07 10:31:50,921 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:31:51,452 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:31:51,453 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:31:51,454 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:32:06,363 DeMo.train INFO: Validation Results - Epoch: 27
+2025-12-07 10:32:06,363 DeMo.train INFO: mAP: 61.9%
+2025-12-07 10:32:06,363 DeMo.train INFO: CMC curve, Rank-1  :62.3%
+2025-12-07 10:32:06,363 DeMo.train INFO: CMC curve, Rank-5  :73.1%
+2025-12-07 10:32:06,364 DeMo.train INFO: CMC curve, Rank-10 :77.9%
+2025-12-07 10:32:06,364 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:32:06,973 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:32:06,973 DeMo.train INFO: Best mAP: 64.6%
+2025-12-07 10:32:06,973 DeMo.train INFO: Best Rank-1: 66.7%
+2025-12-07 10:32:06,973 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:32:06,973 DeMo.train INFO: Best Rank-10: 83.4%
+2025-12-07 10:32:06,973 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:32:13,037 DeMo.train INFO: Epoch[28] Iteration[10/54] Loss: 0.478, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:32:15,642 DeMo.train INFO: Epoch[28] Iteration[20/54] Loss: 0.475, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:32:18,233 DeMo.train INFO: Epoch[28] Iteration[30/54] Loss: 0.473, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:32:20,859 DeMo.train INFO: Epoch[28] Iteration[40/54] Loss: 0.471, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:32:23,487 DeMo.train INFO: Epoch[28] Iteration[50/54] Loss: 0.469, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:32:24,392 DeMo.train INFO: Epoch 28 done. Time per batch: 0.329[s] Speed: 194.7[samples/s]
+2025-12-07 10:32:24,394 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:32:24,394 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:32:24,394 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:32:36,212 DeMo.train INFO: Validation Results - Epoch: 28
+2025-12-07 10:32:36,212 DeMo.train INFO: mAP: 62.6%
+2025-12-07 10:32:36,212 DeMo.train INFO: CMC curve, Rank-1  :63.3%
+2025-12-07 10:32:36,212 DeMo.train INFO: CMC curve, Rank-5  :75.4%
+2025-12-07 10:32:36,212 DeMo.train INFO: CMC curve, Rank-10 :82.2%
+2025-12-07 10:32:36,212 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:32:38,415 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:32:38,416 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:32:38,416 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:32:49,975 DeMo.train INFO: Validation Results - Epoch: 28
+2025-12-07 10:32:49,975 DeMo.train INFO: mAP: 57.3%
+2025-12-07 10:32:49,975 DeMo.train INFO: CMC curve, Rank-1  :57.2%
+2025-12-07 10:32:49,975 DeMo.train INFO: CMC curve, Rank-5  :70.8%
+2025-12-07 10:32:49,975 DeMo.train INFO: CMC curve, Rank-10 :78.5%
+2025-12-07 10:32:49,976 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:32:50,181 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:32:50,181 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:32:50,182 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:33:01,649 DeMo.train INFO: Validation Results - Epoch: 28
+2025-12-07 10:33:01,649 DeMo.train INFO: mAP: 63.0%
+2025-12-07 10:33:01,649 DeMo.train INFO: CMC curve, Rank-1  :63.4%
+2025-12-07 10:33:01,649 DeMo.train INFO: CMC curve, Rank-5  :74.9%
+2025-12-07 10:33:01,649 DeMo.train INFO: CMC curve, Rank-10 :79.5%
+2025-12-07 10:33:01,649 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:33:02,531 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:33:02,531 DeMo.train INFO: Best mAP: 64.6%
+2025-12-07 10:33:02,531 DeMo.train INFO: Best Rank-1: 66.7%
+2025-12-07 10:33:02,531 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:33:02,531 DeMo.train INFO: Best Rank-10: 83.4%
+2025-12-07 10:33:02,531 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:33:07,418 DeMo.train INFO: Epoch[29] Iteration[10/54] Loss: 0.463, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:33:10,022 DeMo.train INFO: Epoch[29] Iteration[20/54] Loss: 0.462, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:33:12,599 DeMo.train INFO: Epoch[29] Iteration[30/54] Loss: 0.461, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:33:15,457 DeMo.train INFO: Epoch[29] Iteration[40/54] Loss: 0.465, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:33:18,079 DeMo.train INFO: Epoch[29] Iteration[50/54] Loss: 0.465, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:33:19,004 DeMo.train INFO: Epoch 29 done. Time per batch: 0.311[s] Speed: 205.9[samples/s]
+2025-12-07 10:33:19,005 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:33:19,005 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:33:19,005 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:33:30,265 DeMo.train INFO: Validation Results - Epoch: 29
+2025-12-07 10:33:30,273 DeMo.train INFO: mAP: 64.7%
+2025-12-07 10:33:30,273 DeMo.train INFO: CMC curve, Rank-1  :66.0%
+2025-12-07 10:33:30,273 DeMo.train INFO: CMC curve, Rank-5  :77.3%
+2025-12-07 10:33:30,273 DeMo.train INFO: CMC curve, Rank-10 :83.7%
+2025-12-07 10:33:30,273 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:33:32,033 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:33:32,033 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:33:32,033 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:33:43,869 DeMo.train INFO: Validation Results - Epoch: 29
+2025-12-07 10:33:43,869 DeMo.train INFO: mAP: 59.0%
+2025-12-07 10:33:43,870 DeMo.train INFO: CMC curve, Rank-1  :61.2%
+2025-12-07 10:33:43,870 DeMo.train INFO: CMC curve, Rank-5  :74.9%
+2025-12-07 10:33:43,870 DeMo.train INFO: CMC curve, Rank-10 :80.5%
+2025-12-07 10:33:43,870 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:33:43,879 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:33:43,880 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:33:43,880 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:33:54,942 DeMo.train INFO: Validation Results - Epoch: 29
+2025-12-07 10:33:54,942 DeMo.train INFO: mAP: 64.7%
+2025-12-07 10:33:54,942 DeMo.train INFO: CMC curve, Rank-1  :65.4%
+2025-12-07 10:33:54,942 DeMo.train INFO: CMC curve, Rank-5  :77.2%
+2025-12-07 10:33:54,942 DeMo.train INFO: CMC curve, Rank-10 :82.1%
+2025-12-07 10:33:54,943 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:34:12,079 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:34:12,082 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:34:12,082 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:34:12,082 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:34:12,083 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:34:12,083 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:34:19,286 DeMo.train INFO: Epoch[30] Iteration[10/54] Loss: 0.463, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:34:21,909 DeMo.train INFO: Epoch[30] Iteration[20/54] Loss: 0.465, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:34:24,495 DeMo.train INFO: Epoch[30] Iteration[30/54] Loss: 0.466, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:34:27,100 DeMo.train INFO: Epoch[30] Iteration[40/54] Loss: 0.466, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:34:29,809 DeMo.train INFO: Epoch[30] Iteration[50/54] Loss: 0.467, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:34:30,726 DeMo.train INFO: Epoch 30 done. Time per batch: 0.352[s] Speed: 181.9[samples/s]
+2025-12-07 10:34:30,731 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:34:30,731 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:34:30,731 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:34:42,721 DeMo.train INFO: Validation Results - Epoch: 30
+2025-12-07 10:34:42,721 DeMo.train INFO: mAP: 60.9%
+2025-12-07 10:34:42,722 DeMo.train INFO: CMC curve, Rank-1  :62.9%
+2025-12-07 10:34:42,722 DeMo.train INFO: CMC curve, Rank-5  :74.5%
+2025-12-07 10:34:42,722 DeMo.train INFO: CMC curve, Rank-10 :79.7%
+2025-12-07 10:34:42,722 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:34:44,338 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:34:44,338 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:34:44,339 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:34:54,892 DeMo.train INFO: Validation Results - Epoch: 30
+2025-12-07 10:34:54,892 DeMo.train INFO: mAP: 54.7%
+2025-12-07 10:34:54,892 DeMo.train INFO: CMC curve, Rank-1  :54.9%
+2025-12-07 10:34:54,892 DeMo.train INFO: CMC curve, Rank-5  :70.1%
+2025-12-07 10:34:54,892 DeMo.train INFO: CMC curve, Rank-10 :75.8%
+2025-12-07 10:34:54,893 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:34:54,896 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:34:54,896 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:34:54,896 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:35:06,674 DeMo.train INFO: Validation Results - Epoch: 30
+2025-12-07 10:35:06,674 DeMo.train INFO: mAP: 60.8%
+2025-12-07 10:35:06,675 DeMo.train INFO: CMC curve, Rank-1  :62.2%
+2025-12-07 10:35:06,675 DeMo.train INFO: CMC curve, Rank-5  :74.4%
+2025-12-07 10:35:06,675 DeMo.train INFO: CMC curve, Rank-10 :78.8%
+2025-12-07 10:35:06,675 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:35:07,398 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:35:07,399 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:35:07,399 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:35:07,399 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:35:07,399 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:35:07,399 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:35:14,268 DeMo.train INFO: Epoch[31] Iteration[10/54] Loss: 0.476, Acc: 0.997, Base Lr: 3.50e-04
+2025-12-07 10:35:16,907 DeMo.train INFO: Epoch[31] Iteration[20/54] Loss: 0.470, Acc: 0.998, Base Lr: 3.50e-04
+2025-12-07 10:35:19,519 DeMo.train INFO: Epoch[31] Iteration[30/54] Loss: 0.469, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:35:22,132 DeMo.train INFO: Epoch[31] Iteration[40/54] Loss: 0.467, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:35:24,768 DeMo.train INFO: Epoch[31] Iteration[50/54] Loss: 0.466, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:35:25,676 DeMo.train INFO: Epoch 31 done. Time per batch: 0.345[s] Speed: 185.6[samples/s]
+2025-12-07 10:35:25,678 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:35:25,678 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:35:25,678 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:35:36,854 DeMo.train INFO: Validation Results - Epoch: 31
+2025-12-07 10:35:36,854 DeMo.train INFO: mAP: 60.7%
+2025-12-07 10:35:36,854 DeMo.train INFO: CMC curve, Rank-1  :62.4%
+2025-12-07 10:35:36,855 DeMo.train INFO: CMC curve, Rank-5  :73.7%
+2025-12-07 10:35:36,855 DeMo.train INFO: CMC curve, Rank-10 :78.9%
+2025-12-07 10:35:36,855 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:35:36,951 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:35:36,951 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:35:36,951 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:35:48,380 DeMo.train INFO: Validation Results - Epoch: 31
+2025-12-07 10:35:48,380 DeMo.train INFO: mAP: 57.6%
+2025-12-07 10:35:48,381 DeMo.train INFO: CMC curve, Rank-1  :59.0%
+2025-12-07 10:35:48,381 DeMo.train INFO: CMC curve, Rank-5  :72.0%
+2025-12-07 10:35:48,381 DeMo.train INFO: CMC curve, Rank-10 :77.8%
+2025-12-07 10:35:48,381 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:35:49,092 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:35:49,092 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:35:49,092 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:36:00,555 DeMo.train INFO: Validation Results - Epoch: 31
+2025-12-07 10:36:00,555 DeMo.train INFO: mAP: 62.1%
+2025-12-07 10:36:00,555 DeMo.train INFO: CMC curve, Rank-1  :62.2%
+2025-12-07 10:36:00,555 DeMo.train INFO: CMC curve, Rank-5  :73.8%
+2025-12-07 10:36:00,555 DeMo.train INFO: CMC curve, Rank-10 :79.9%
+2025-12-07 10:36:00,555 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:36:01,160 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:36:01,160 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:36:01,161 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:36:01,161 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:36:01,161 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:36:01,161 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:36:09,001 DeMo.train INFO: Epoch[32] Iteration[10/54] Loss: 0.457, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:36:11,620 DeMo.train INFO: Epoch[32] Iteration[20/54] Loss: 0.458, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:36:14,284 DeMo.train INFO: Epoch[32] Iteration[30/54] Loss: 0.462, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:36:17,422 DeMo.train INFO: Epoch[32] Iteration[40/54] Loss: 0.461, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:36:20,060 DeMo.train INFO: Epoch[32] Iteration[50/54] Loss: 0.462, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:36:21,005 DeMo.train INFO: Epoch 32 done. Time per batch: 0.374[s] Speed: 170.9[samples/s]
+2025-12-07 10:36:21,007 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:36:21,007 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:36:21,007 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:36:32,539 DeMo.train INFO: Validation Results - Epoch: 32
+2025-12-07 10:36:32,540 DeMo.train INFO: mAP: 61.2%
+2025-12-07 10:36:32,540 DeMo.train INFO: CMC curve, Rank-1  :62.2%
+2025-12-07 10:36:32,540 DeMo.train INFO: CMC curve, Rank-5  :74.5%
+2025-12-07 10:36:32,540 DeMo.train INFO: CMC curve, Rank-10 :82.3%
+2025-12-07 10:36:32,540 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:36:34,080 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:36:34,080 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:36:34,080 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:36:45,635 DeMo.train INFO: Validation Results - Epoch: 32
+2025-12-07 10:36:45,636 DeMo.train INFO: mAP: 57.5%
+2025-12-07 10:36:45,636 DeMo.train INFO: CMC curve, Rank-1  :57.7%
+2025-12-07 10:36:45,636 DeMo.train INFO: CMC curve, Rank-5  :68.4%
+2025-12-07 10:36:45,636 DeMo.train INFO: CMC curve, Rank-10 :76.1%
+2025-12-07 10:36:45,636 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:36:46,126 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:36:46,126 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:36:46,126 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:36:57,775 DeMo.train INFO: Validation Results - Epoch: 32
+2025-12-07 10:36:57,776 DeMo.train INFO: mAP: 62.0%
+2025-12-07 10:36:57,777 DeMo.train INFO: CMC curve, Rank-1  :61.0%
+2025-12-07 10:36:57,778 DeMo.train INFO: CMC curve, Rank-5  :71.8%
+2025-12-07 10:36:57,778 DeMo.train INFO: CMC curve, Rank-10 :78.1%
+2025-12-07 10:36:57,779 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:36:58,393 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:36:58,394 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:36:58,394 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:36:58,395 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:36:58,396 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:36:58,397 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:37:05,420 DeMo.train INFO: Epoch[33] Iteration[10/54] Loss: 0.462, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:37:08,079 DeMo.train INFO: Epoch[33] Iteration[20/54] Loss: 0.461, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:37:10,692 DeMo.train INFO: Epoch[33] Iteration[30/54] Loss: 0.462, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:37:13,328 DeMo.train INFO: Epoch[33] Iteration[40/54] Loss: 0.463, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:37:15,946 DeMo.train INFO: Epoch[33] Iteration[50/54] Loss: 0.463, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:37:16,859 DeMo.train INFO: Epoch 33 done. Time per batch: 0.348[s] Speed: 183.7[samples/s]
+2025-12-07 10:37:16,860 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:37:16,860 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:37:16,860 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:37:27,484 DeMo.train INFO: Validation Results - Epoch: 33
+2025-12-07 10:37:27,484 DeMo.train INFO: mAP: 59.7%
+2025-12-07 10:37:27,484 DeMo.train INFO: CMC curve, Rank-1  :59.1%
+2025-12-07 10:37:27,484 DeMo.train INFO: CMC curve, Rank-5  :73.3%
+2025-12-07 10:37:27,484 DeMo.train INFO: CMC curve, Rank-10 :80.5%
+2025-12-07 10:37:27,484 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:37:29,507 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:37:29,508 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:37:29,508 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:37:40,916 DeMo.train INFO: Validation Results - Epoch: 33
+2025-12-07 10:37:40,917 DeMo.train INFO: mAP: 58.8%
+2025-12-07 10:37:40,917 DeMo.train INFO: CMC curve, Rank-1  :61.0%
+2025-12-07 10:37:40,917 DeMo.train INFO: CMC curve, Rank-5  :73.0%
+2025-12-07 10:37:40,917 DeMo.train INFO: CMC curve, Rank-10 :78.8%
+2025-12-07 10:37:40,917 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:37:41,910 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:37:41,911 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:37:41,911 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:37:52,819 DeMo.train INFO: Validation Results - Epoch: 33
+2025-12-07 10:37:52,819 DeMo.train INFO: mAP: 62.3%
+2025-12-07 10:37:52,819 DeMo.train INFO: CMC curve, Rank-1  :62.7%
+2025-12-07 10:37:52,820 DeMo.train INFO: CMC curve, Rank-5  :74.0%
+2025-12-07 10:37:52,820 DeMo.train INFO: CMC curve, Rank-10 :80.5%
+2025-12-07 10:37:52,820 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:37:52,830 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:37:52,830 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:37:52,830 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:37:52,830 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:37:52,830 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:37:52,831 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:37:59,550 DeMo.train INFO: Epoch[34] Iteration[10/54] Loss: 0.457, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:38:02,183 DeMo.train INFO: Epoch[34] Iteration[20/54] Loss: 0.458, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:38:04,782 DeMo.train INFO: Epoch[34] Iteration[30/54] Loss: 0.456, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:38:07,411 DeMo.train INFO: Epoch[34] Iteration[40/54] Loss: 0.457, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:38:10,048 DeMo.train INFO: Epoch[34] Iteration[50/54] Loss: 0.457, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:38:10,969 DeMo.train INFO: Epoch 34 done. Time per batch: 0.342[s] Speed: 187.0[samples/s]
+2025-12-07 10:38:10,971 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:38:10,971 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:38:10,971 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:38:22,815 DeMo.train INFO: Validation Results - Epoch: 34
+2025-12-07 10:38:22,815 DeMo.train INFO: mAP: 60.7%
+2025-12-07 10:38:22,816 DeMo.train INFO: CMC curve, Rank-1  :60.3%
+2025-12-07 10:38:22,816 DeMo.train INFO: CMC curve, Rank-5  :75.2%
+2025-12-07 10:38:22,816 DeMo.train INFO: CMC curve, Rank-10 :80.7%
+2025-12-07 10:38:22,816 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:38:23,730 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:38:23,731 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:38:23,731 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:38:35,000 DeMo.train INFO: Validation Results - Epoch: 34
+2025-12-07 10:38:35,003 DeMo.train INFO: mAP: 58.7%
+2025-12-07 10:38:35,009 DeMo.train INFO: CMC curve, Rank-1  :59.4%
+2025-12-07 10:38:35,022 DeMo.train INFO: CMC curve, Rank-5  :70.9%
+2025-12-07 10:38:35,024 DeMo.train INFO: CMC curve, Rank-10 :77.5%
+2025-12-07 10:38:35,024 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:38:35,921 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:38:35,921 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:38:35,921 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:38:47,008 DeMo.train INFO: Validation Results - Epoch: 34
+2025-12-07 10:38:47,008 DeMo.train INFO: mAP: 62.3%
+2025-12-07 10:38:47,008 DeMo.train INFO: CMC curve, Rank-1  :61.4%
+2025-12-07 10:38:47,008 DeMo.train INFO: CMC curve, Rank-5  :72.4%
+2025-12-07 10:38:47,008 DeMo.train INFO: CMC curve, Rank-10 :78.3%
+2025-12-07 10:38:47,008 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:38:48,043 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:38:48,043 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:38:48,043 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:38:48,043 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:38:48,044 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:38:48,044 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:38:55,474 DeMo.train INFO: Epoch[35] Iteration[10/54] Loss: 0.460, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:38:58,557 DeMo.train INFO: Epoch[35] Iteration[20/54] Loss: 0.457, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:39:01,188 DeMo.train INFO: Epoch[35] Iteration[30/54] Loss: 0.456, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:39:03,797 DeMo.train INFO: Epoch[35] Iteration[40/54] Loss: 0.456, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:39:06,398 DeMo.train INFO: Epoch[35] Iteration[50/54] Loss: 0.456, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:39:07,375 DeMo.train INFO: Epoch 35 done. Time per batch: 0.365[s] Speed: 175.5[samples/s]
+2025-12-07 10:39:07,377 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:39:07,377 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:39:07,377 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:39:18,115 DeMo.train INFO: Validation Results - Epoch: 35
+2025-12-07 10:39:18,116 DeMo.train INFO: mAP: 61.1%
+2025-12-07 10:39:18,116 DeMo.train INFO: CMC curve, Rank-1  :61.0%
+2025-12-07 10:39:18,116 DeMo.train INFO: CMC curve, Rank-5  :73.9%
+2025-12-07 10:39:18,116 DeMo.train INFO: CMC curve, Rank-10 :81.1%
+2025-12-07 10:39:18,116 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:39:18,897 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:39:18,898 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:39:18,898 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:39:30,251 DeMo.train INFO: Validation Results - Epoch: 35
+2025-12-07 10:39:30,251 DeMo.train INFO: mAP: 58.5%
+2025-12-07 10:39:30,252 DeMo.train INFO: CMC curve, Rank-1  :59.0%
+2025-12-07 10:39:30,252 DeMo.train INFO: CMC curve, Rank-5  :71.8%
+2025-12-07 10:39:30,252 DeMo.train INFO: CMC curve, Rank-10 :78.1%
+2025-12-07 10:39:30,252 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:39:31,348 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:39:31,348 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:39:31,348 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:39:42,724 DeMo.train INFO: Validation Results - Epoch: 35
+2025-12-07 10:39:42,725 DeMo.train INFO: mAP: 62.3%
+2025-12-07 10:39:42,725 DeMo.train INFO: CMC curve, Rank-1  :62.0%
+2025-12-07 10:39:42,725 DeMo.train INFO: CMC curve, Rank-5  :72.7%
+2025-12-07 10:39:42,725 DeMo.train INFO: CMC curve, Rank-10 :79.7%
+2025-12-07 10:39:42,725 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:39:43,616 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:39:43,617 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:39:43,617 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:39:43,617 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:39:43,617 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:39:43,617 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:39:49,863 DeMo.train INFO: Epoch[36] Iteration[10/54] Loss: 0.455, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:39:53,135 DeMo.train INFO: Epoch[36] Iteration[20/54] Loss: 0.454, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:39:55,728 DeMo.train INFO: Epoch[36] Iteration[30/54] Loss: 0.454, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:39:58,375 DeMo.train INFO: Epoch[36] Iteration[40/54] Loss: 0.453, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:40:01,006 DeMo.train INFO: Epoch[36] Iteration[50/54] Loss: 0.453, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:40:01,912 DeMo.train INFO: Epoch 36 done. Time per batch: 0.345[s] Speed: 185.4[samples/s]
+2025-12-07 10:40:01,913 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:40:01,913 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:40:01,913 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:40:12,963 DeMo.train INFO: Validation Results - Epoch: 36
+2025-12-07 10:40:12,963 DeMo.train INFO: mAP: 60.6%
+2025-12-07 10:40:12,963 DeMo.train INFO: CMC curve, Rank-1  :60.6%
+2025-12-07 10:40:12,963 DeMo.train INFO: CMC curve, Rank-5  :73.3%
+2025-12-07 10:40:12,963 DeMo.train INFO: CMC curve, Rank-10 :80.5%
+2025-12-07 10:40:12,964 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:40:14,935 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:40:14,935 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:40:14,935 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:40:26,277 DeMo.train INFO: Validation Results - Epoch: 36
+2025-12-07 10:40:26,283 DeMo.train INFO: mAP: 56.8%
+2025-12-07 10:40:26,290 DeMo.train INFO: CMC curve, Rank-1  :58.0%
+2025-12-07 10:40:26,290 DeMo.train INFO: CMC curve, Rank-5  :68.9%
+2025-12-07 10:40:26,290 DeMo.train INFO: CMC curve, Rank-10 :76.0%
+2025-12-07 10:40:26,290 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:40:26,302 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:40:26,303 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:40:26,303 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:40:37,545 DeMo.train INFO: Validation Results - Epoch: 36
+2025-12-07 10:40:37,545 DeMo.train INFO: mAP: 60.7%
+2025-12-07 10:40:37,545 DeMo.train INFO: CMC curve, Rank-1  :60.9%
+2025-12-07 10:40:37,546 DeMo.train INFO: CMC curve, Rank-5  :72.2%
+2025-12-07 10:40:37,546 DeMo.train INFO: CMC curve, Rank-10 :78.0%
+2025-12-07 10:40:37,546 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:40:37,663 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:40:37,664 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:40:37,664 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:40:37,664 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:40:37,664 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:40:37,664 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:40:44,077 DeMo.train INFO: Epoch[37] Iteration[10/54] Loss: 0.453, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:40:47,173 DeMo.train INFO: Epoch[37] Iteration[20/54] Loss: 0.453, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:40:49,830 DeMo.train INFO: Epoch[37] Iteration[30/54] Loss: 0.454, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:40:52,448 DeMo.train INFO: Epoch[37] Iteration[40/54] Loss: 0.453, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:40:55,090 DeMo.train INFO: Epoch[37] Iteration[50/54] Loss: 0.453, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:40:56,008 DeMo.train INFO: Epoch 37 done. Time per batch: 0.346[s] Speed: 184.9[samples/s]
+2025-12-07 10:40:56,010 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:40:56,010 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:40:56,010 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:41:06,988 DeMo.train INFO: Validation Results - Epoch: 37
+2025-12-07 10:41:06,988 DeMo.train INFO: mAP: 62.3%
+2025-12-07 10:41:06,988 DeMo.train INFO: CMC curve, Rank-1  :62.9%
+2025-12-07 10:41:06,988 DeMo.train INFO: CMC curve, Rank-5  :75.0%
+2025-12-07 10:41:06,988 DeMo.train INFO: CMC curve, Rank-10 :82.3%
+2025-12-07 10:41:06,989 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:41:08,696 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:41:08,697 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:41:08,697 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:41:20,241 DeMo.train INFO: Validation Results - Epoch: 37
+2025-12-07 10:41:20,241 DeMo.train INFO: mAP: 56.2%
+2025-12-07 10:41:20,241 DeMo.train INFO: CMC curve, Rank-1  :55.7%
+2025-12-07 10:41:20,241 DeMo.train INFO: CMC curve, Rank-5  :68.1%
+2025-12-07 10:41:20,241 DeMo.train INFO: CMC curve, Rank-10 :75.0%
+2025-12-07 10:41:20,241 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:41:21,084 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:41:21,085 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:41:21,085 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:41:31,738 DeMo.train INFO: Validation Results - Epoch: 37
+2025-12-07 10:41:31,738 DeMo.train INFO: mAP: 60.9%
+2025-12-07 10:41:31,738 DeMo.train INFO: CMC curve, Rank-1  :60.4%
+2025-12-07 10:41:31,738 DeMo.train INFO: CMC curve, Rank-5  :71.2%
+2025-12-07 10:41:31,738 DeMo.train INFO: CMC curve, Rank-10 :78.3%
+2025-12-07 10:41:31,738 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:41:31,965 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:41:31,965 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:41:31,965 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:41:31,965 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:41:31,965 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:41:31,965 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:41:38,525 DeMo.train INFO: Epoch[38] Iteration[10/54] Loss: 0.451, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:41:41,582 DeMo.train INFO: Epoch[38] Iteration[20/54] Loss: 0.451, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:41:44,218 DeMo.train INFO: Epoch[38] Iteration[30/54] Loss: 0.450, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:41:46,838 DeMo.train INFO: Epoch[38] Iteration[40/54] Loss: 0.451, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:41:49,469 DeMo.train INFO: Epoch[38] Iteration[50/54] Loss: 0.451, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:41:50,399 DeMo.train INFO: Epoch 38 done. Time per batch: 0.348[s] Speed: 184.0[samples/s]
+2025-12-07 10:41:50,401 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:41:50,401 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:41:50,401 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:42:01,689 DeMo.train INFO: Validation Results - Epoch: 38
+2025-12-07 10:42:01,689 DeMo.train INFO: mAP: 62.6%
+2025-12-07 10:42:01,689 DeMo.train INFO: CMC curve, Rank-1  :61.8%
+2025-12-07 10:42:01,689 DeMo.train INFO: CMC curve, Rank-5  :76.0%
+2025-12-07 10:42:01,690 DeMo.train INFO: CMC curve, Rank-10 :81.7%
+2025-12-07 10:42:01,690 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:42:02,363 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:42:02,363 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:42:02,364 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:42:13,817 DeMo.train INFO: Validation Results - Epoch: 38
+2025-12-07 10:42:13,817 DeMo.train INFO: mAP: 56.7%
+2025-12-07 10:42:13,817 DeMo.train INFO: CMC curve, Rank-1  :56.5%
+2025-12-07 10:42:13,817 DeMo.train INFO: CMC curve, Rank-5  :67.6%
+2025-12-07 10:42:13,817 DeMo.train INFO: CMC curve, Rank-10 :74.6%
+2025-12-07 10:42:13,817 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:42:14,602 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:42:14,602 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:42:14,602 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:42:26,345 DeMo.train INFO: Validation Results - Epoch: 38
+2025-12-07 10:42:26,346 DeMo.train INFO: mAP: 61.0%
+2025-12-07 10:42:26,346 DeMo.train INFO: CMC curve, Rank-1  :60.5%
+2025-12-07 10:42:26,346 DeMo.train INFO: CMC curve, Rank-5  :71.7%
+2025-12-07 10:42:26,346 DeMo.train INFO: CMC curve, Rank-10 :77.6%
+2025-12-07 10:42:26,346 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:42:26,865 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:42:26,865 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:42:26,865 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:42:26,865 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:42:26,865 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:42:26,865 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:42:33,413 DeMo.train INFO: Epoch[39] Iteration[10/54] Loss: 0.451, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:42:36,048 DeMo.train INFO: Epoch[39] Iteration[20/54] Loss: 0.450, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:42:38,713 DeMo.train INFO: Epoch[39] Iteration[30/54] Loss: 0.450, Acc: 0.999, Base Lr: 3.50e-04
+2025-12-07 10:42:41,336 DeMo.train INFO: Epoch[39] Iteration[40/54] Loss: 0.450, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:42:43,947 DeMo.train INFO: Epoch[39] Iteration[50/54] Loss: 0.449, Acc: 1.000, Base Lr: 3.50e-04
+2025-12-07 10:42:44,854 DeMo.train INFO: Epoch 39 done. Time per batch: 0.339[s] Speed: 188.6[samples/s]
+2025-12-07 10:42:44,855 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:42:44,855 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:42:44,856 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:42:56,293 DeMo.train INFO: Validation Results - Epoch: 39
+2025-12-07 10:42:56,293 DeMo.train INFO: mAP: 62.6%
+2025-12-07 10:42:56,293 DeMo.train INFO: CMC curve, Rank-1  :60.5%
+2025-12-07 10:42:56,294 DeMo.train INFO: CMC curve, Rank-5  :75.5%
+2025-12-07 10:42:56,294 DeMo.train INFO: CMC curve, Rank-10 :82.8%
+2025-12-07 10:42:56,294 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:42:58,477 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:42:58,477 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:42:58,478 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:43:09,799 DeMo.train INFO: Validation Results - Epoch: 39
+2025-12-07 10:43:09,799 DeMo.train INFO: mAP: 56.8%
+2025-12-07 10:43:09,799 DeMo.train INFO: CMC curve, Rank-1  :57.4%
+2025-12-07 10:43:09,799 DeMo.train INFO: CMC curve, Rank-5  :68.8%
+2025-12-07 10:43:09,799 DeMo.train INFO: CMC curve, Rank-10 :73.7%
+2025-12-07 10:43:09,799 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:43:10,362 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:43:10,362 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:43:10,362 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:43:21,178 DeMo.train INFO: Validation Results - Epoch: 39
+2025-12-07 10:43:21,179 DeMo.train INFO: mAP: 60.8%
+2025-12-07 10:43:21,179 DeMo.train INFO: CMC curve, Rank-1  :59.3%
+2025-12-07 10:43:21,179 DeMo.train INFO: CMC curve, Rank-5  :70.9%
+2025-12-07 10:43:21,179 DeMo.train INFO: CMC curve, Rank-10 :77.2%
+2025-12-07 10:43:21,179 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:43:22,190 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:43:22,190 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:43:22,190 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:43:22,190 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:43:22,190 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:43:22,190 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:43:29,914 DeMo.train INFO: Epoch[40] Iteration[10/54] Loss: 0.450, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:43:32,901 DeMo.train INFO: Epoch[40] Iteration[20/54] Loss: 0.449, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:43:35,718 DeMo.train INFO: Epoch[40] Iteration[30/54] Loss: 0.450, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:43:38,337 DeMo.train INFO: Epoch[40] Iteration[40/54] Loss: 0.450, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:43:40,944 DeMo.train INFO: Epoch[40] Iteration[50/54] Loss: 0.456, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:43:41,852 DeMo.train INFO: Epoch 40 done. Time per batch: 0.371[s] Speed: 172.5[samples/s]
+2025-12-07 10:43:41,854 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:43:41,854 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:43:41,854 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:43:53,052 DeMo.train INFO: Validation Results - Epoch: 40
+2025-12-07 10:43:53,053 DeMo.train INFO: mAP: 61.5%
+2025-12-07 10:43:53,053 DeMo.train INFO: CMC curve, Rank-1  :59.7%
+2025-12-07 10:43:53,053 DeMo.train INFO: CMC curve, Rank-5  :74.2%
+2025-12-07 10:43:53,053 DeMo.train INFO: CMC curve, Rank-10 :81.7%
+2025-12-07 10:43:53,053 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:43:55,152 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:43:55,153 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:43:55,153 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:44:06,702 DeMo.train INFO: Validation Results - Epoch: 40
+2025-12-07 10:44:06,702 DeMo.train INFO: mAP: 55.4%
+2025-12-07 10:44:06,702 DeMo.train INFO: CMC curve, Rank-1  :56.2%
+2025-12-07 10:44:06,702 DeMo.train INFO: CMC curve, Rank-5  :67.3%
+2025-12-07 10:44:06,702 DeMo.train INFO: CMC curve, Rank-10 :73.1%
+2025-12-07 10:44:06,702 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:44:06,995 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:44:06,995 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:44:06,995 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:44:18,826 DeMo.train INFO: Validation Results - Epoch: 40
+2025-12-07 10:44:18,826 DeMo.train INFO: mAP: 59.5%
+2025-12-07 10:44:18,826 DeMo.train INFO: CMC curve, Rank-1  :58.9%
+2025-12-07 10:44:18,826 DeMo.train INFO: CMC curve, Rank-5  :69.6%
+2025-12-07 10:44:18,827 DeMo.train INFO: CMC curve, Rank-10 :75.6%
+2025-12-07 10:44:18,827 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:44:18,989 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:44:18,989 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:44:18,989 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:44:18,989 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:44:18,989 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:44:18,989 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:44:25,707 DeMo.train INFO: Epoch[41] Iteration[10/54] Loss: 0.451, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:44:29,169 DeMo.train INFO: Epoch[41] Iteration[20/54] Loss: 0.449, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:44:31,794 DeMo.train INFO: Epoch[41] Iteration[30/54] Loss: 0.450, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:44:34,418 DeMo.train INFO: Epoch[41] Iteration[40/54] Loss: 0.449, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:44:37,027 DeMo.train INFO: Epoch[41] Iteration[50/54] Loss: 0.449, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:44:37,937 DeMo.train INFO: Epoch 41 done. Time per batch: 0.358[s] Speed: 179.0[samples/s]
+2025-12-07 10:44:37,939 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:44:37,939 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:44:37,939 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:44:48,986 DeMo.train INFO: Validation Results - Epoch: 41
+2025-12-07 10:44:48,986 DeMo.train INFO: mAP: 61.8%
+2025-12-07 10:44:48,986 DeMo.train INFO: CMC curve, Rank-1  :60.0%
+2025-12-07 10:44:48,986 DeMo.train INFO: CMC curve, Rank-5  :75.1%
+2025-12-07 10:44:48,986 DeMo.train INFO: CMC curve, Rank-10 :81.5%
+2025-12-07 10:44:48,986 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:44:50,907 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:44:50,907 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:44:50,907 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:45:02,268 DeMo.train INFO: Validation Results - Epoch: 41
+2025-12-07 10:45:02,269 DeMo.train INFO: mAP: 55.9%
+2025-12-07 10:45:02,269 DeMo.train INFO: CMC curve, Rank-1  :57.2%
+2025-12-07 10:45:02,269 DeMo.train INFO: CMC curve, Rank-5  :67.5%
+2025-12-07 10:45:02,269 DeMo.train INFO: CMC curve, Rank-10 :72.6%
+2025-12-07 10:45:02,269 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:45:02,859 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:45:02,859 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:45:02,860 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:45:14,356 DeMo.train INFO: Validation Results - Epoch: 41
+2025-12-07 10:45:14,357 DeMo.train INFO: mAP: 59.9%
+2025-12-07 10:45:14,357 DeMo.train INFO: CMC curve, Rank-1  :59.6%
+2025-12-07 10:45:14,357 DeMo.train INFO: CMC curve, Rank-5  :69.9%
+2025-12-07 10:45:14,357 DeMo.train INFO: CMC curve, Rank-10 :75.8%
+2025-12-07 10:45:14,357 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:45:14,978 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:45:14,978 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:45:14,978 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:45:14,978 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:45:14,978 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:45:14,978 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:45:22,691 DeMo.train INFO: Epoch[42] Iteration[10/54] Loss: 0.455, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:45:25,926 DeMo.train INFO: Epoch[42] Iteration[20/54] Loss: 0.452, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:45:28,543 DeMo.train INFO: Epoch[42] Iteration[30/54] Loss: 0.450, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:45:31,151 DeMo.train INFO: Epoch[42] Iteration[40/54] Loss: 0.450, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:45:33,751 DeMo.train INFO: Epoch[42] Iteration[50/54] Loss: 0.449, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:45:34,685 DeMo.train INFO: Epoch 42 done. Time per batch: 0.372[s] Speed: 172.1[samples/s]
+2025-12-07 10:45:34,686 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:45:34,686 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:45:34,687 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:45:46,357 DeMo.train INFO: Validation Results - Epoch: 42
+2025-12-07 10:45:46,357 DeMo.train INFO: mAP: 62.4%
+2025-12-07 10:45:46,357 DeMo.train INFO: CMC curve, Rank-1  :60.3%
+2025-12-07 10:45:46,358 DeMo.train INFO: CMC curve, Rank-5  :75.7%
+2025-12-07 10:45:46,358 DeMo.train INFO: CMC curve, Rank-10 :82.7%
+2025-12-07 10:45:46,358 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:45:48,111 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:45:48,112 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:45:48,112 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:45:59,543 DeMo.train INFO: Validation Results - Epoch: 42
+2025-12-07 10:45:59,543 DeMo.train INFO: mAP: 56.4%
+2025-12-07 10:45:59,543 DeMo.train INFO: CMC curve, Rank-1  :57.5%
+2025-12-07 10:45:59,543 DeMo.train INFO: CMC curve, Rank-5  :67.2%
+2025-12-07 10:45:59,543 DeMo.train INFO: CMC curve, Rank-10 :73.3%
+2025-12-07 10:45:59,543 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:45:59,808 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:45:59,808 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:45:59,809 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:46:11,650 DeMo.train INFO: Validation Results - Epoch: 42
+2025-12-07 10:46:11,650 DeMo.train INFO: mAP: 60.4%
+2025-12-07 10:46:11,651 DeMo.train INFO: CMC curve, Rank-1  :59.9%
+2025-12-07 10:46:11,651 DeMo.train INFO: CMC curve, Rank-5  :70.0%
+2025-12-07 10:46:11,651 DeMo.train INFO: CMC curve, Rank-10 :76.2%
+2025-12-07 10:46:11,651 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:46:12,347 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:46:12,347 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:46:12,347 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:46:12,347 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:46:12,348 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:46:12,348 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:46:20,090 DeMo.train INFO: Epoch[43] Iteration[10/54] Loss: 0.449, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:46:22,708 DeMo.train INFO: Epoch[43] Iteration[20/54] Loss: 0.448, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:46:25,332 DeMo.train INFO: Epoch[43] Iteration[30/54] Loss: 0.448, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:46:27,944 DeMo.train INFO: Epoch[43] Iteration[40/54] Loss: 0.448, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:46:30,569 DeMo.train INFO: Epoch[43] Iteration[50/54] Loss: 0.447, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:46:31,586 DeMo.train INFO: Epoch 43 done. Time per batch: 0.363[s] Speed: 176.3[samples/s]
+2025-12-07 10:46:31,588 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:46:31,588 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:46:31,588 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:46:42,737 DeMo.train INFO: Validation Results - Epoch: 43
+2025-12-07 10:46:42,737 DeMo.train INFO: mAP: 62.6%
+2025-12-07 10:46:42,737 DeMo.train INFO: CMC curve, Rank-1  :60.6%
+2025-12-07 10:46:42,738 DeMo.train INFO: CMC curve, Rank-5  :76.6%
+2025-12-07 10:46:42,738 DeMo.train INFO: CMC curve, Rank-10 :82.4%
+2025-12-07 10:46:42,738 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:46:43,870 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:46:43,870 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:46:43,870 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:46:55,209 DeMo.train INFO: Validation Results - Epoch: 43
+2025-12-07 10:46:55,210 DeMo.train INFO: mAP: 56.7%
+2025-12-07 10:46:55,211 DeMo.train INFO: CMC curve, Rank-1  :57.8%
+2025-12-07 10:46:55,211 DeMo.train INFO: CMC curve, Rank-5  :67.7%
+2025-12-07 10:46:55,212 DeMo.train INFO: CMC curve, Rank-10 :73.4%
+2025-12-07 10:46:55,213 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:46:55,400 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:46:55,400 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:46:55,401 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:47:10,787 DeMo.train INFO: Validation Results - Epoch: 43
+2025-12-07 10:47:10,788 DeMo.train INFO: mAP: 60.7%
+2025-12-07 10:47:10,788 DeMo.train INFO: CMC curve, Rank-1  :60.0%
+2025-12-07 10:47:10,788 DeMo.train INFO: CMC curve, Rank-5  :70.5%
+2025-12-07 10:47:10,788 DeMo.train INFO: CMC curve, Rank-10 :76.4%
+2025-12-07 10:47:10,788 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:47:11,070 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:47:11,070 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:47:11,070 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:47:11,070 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:47:11,071 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:47:11,071 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:47:18,915 DeMo.train INFO: Epoch[44] Iteration[10/54] Loss: 0.448, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:47:21,555 DeMo.train INFO: Epoch[44] Iteration[20/54] Loss: 0.447, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:47:24,208 DeMo.train INFO: Epoch[44] Iteration[30/54] Loss: 0.447, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:47:26,823 DeMo.train INFO: Epoch[44] Iteration[40/54] Loss: 0.447, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:47:29,436 DeMo.train INFO: Epoch[44] Iteration[50/54] Loss: 0.447, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:47:30,339 DeMo.train INFO: Epoch 44 done. Time per batch: 0.364[s] Speed: 176.0[samples/s]
+2025-12-07 10:47:30,341 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:47:30,341 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:47:30,341 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:47:41,154 DeMo.train INFO: Validation Results - Epoch: 44
+2025-12-07 10:47:41,155 DeMo.train INFO: mAP: 62.5%
+2025-12-07 10:47:41,155 DeMo.train INFO: CMC curve, Rank-1  :61.8%
+2025-12-07 10:47:41,155 DeMo.train INFO: CMC curve, Rank-5  :76.3%
+2025-12-07 10:47:41,155 DeMo.train INFO: CMC curve, Rank-10 :82.5%
+2025-12-07 10:47:41,155 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:47:43,052 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:47:43,052 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:47:43,052 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:47:54,589 DeMo.train INFO: Validation Results - Epoch: 44
+2025-12-07 10:47:54,589 DeMo.train INFO: mAP: 56.8%
+2025-12-07 10:47:54,589 DeMo.train INFO: CMC curve, Rank-1  :57.4%
+2025-12-07 10:47:54,589 DeMo.train INFO: CMC curve, Rank-5  :67.9%
+2025-12-07 10:47:54,590 DeMo.train INFO: CMC curve, Rank-10 :73.9%
+2025-12-07 10:47:54,590 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:47:54,735 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:47:54,735 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:47:54,736 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:48:05,465 DeMo.train INFO: Validation Results - Epoch: 44
+2025-12-07 10:48:05,466 DeMo.train INFO: mAP: 60.7%
+2025-12-07 10:48:05,467 DeMo.train INFO: CMC curve, Rank-1  :60.4%
+2025-12-07 10:48:05,468 DeMo.train INFO: CMC curve, Rank-5  :70.5%
+2025-12-07 10:48:05,469 DeMo.train INFO: CMC curve, Rank-10 :76.1%
+2025-12-07 10:48:05,470 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:48:06,015 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:48:06,015 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:48:06,016 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:48:06,017 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:48:06,018 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:48:06,018 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:48:17,096 DeMo.train INFO: Epoch[45] Iteration[10/54] Loss: 0.448, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:48:19,719 DeMo.train INFO: Epoch[45] Iteration[20/54] Loss: 0.448, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:48:22,439 DeMo.train INFO: Epoch[45] Iteration[30/54] Loss: 0.448, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:48:25,052 DeMo.train INFO: Epoch[45] Iteration[40/54] Loss: 0.448, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:48:27,667 DeMo.train INFO: Epoch[45] Iteration[50/54] Loss: 0.448, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:48:28,584 DeMo.train INFO: Epoch 45 done. Time per batch: 0.426[s] Speed: 150.3[samples/s]
+2025-12-07 10:48:28,586 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:48:28,586 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:48:28,586 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:48:39,296 DeMo.train INFO: Validation Results - Epoch: 45
+2025-12-07 10:48:39,296 DeMo.train INFO: mAP: 62.7%
+2025-12-07 10:48:39,297 DeMo.train INFO: CMC curve, Rank-1  :61.1%
+2025-12-07 10:48:39,297 DeMo.train INFO: CMC curve, Rank-5  :76.4%
+2025-12-07 10:48:39,297 DeMo.train INFO: CMC curve, Rank-10 :82.5%
+2025-12-07 10:48:39,297 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:48:40,314 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:48:40,314 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:48:40,314 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:48:51,789 DeMo.train INFO: Validation Results - Epoch: 45
+2025-12-07 10:48:51,790 DeMo.train INFO: mAP: 57.0%
+2025-12-07 10:48:51,790 DeMo.train INFO: CMC curve, Rank-1  :57.7%
+2025-12-07 10:48:51,790 DeMo.train INFO: CMC curve, Rank-5  :68.4%
+2025-12-07 10:48:51,790 DeMo.train INFO: CMC curve, Rank-10 :73.9%
+2025-12-07 10:48:51,790 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:48:52,114 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:48:52,114 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:48:52,114 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:49:02,871 DeMo.train INFO: Validation Results - Epoch: 45
+2025-12-07 10:49:02,871 DeMo.train INFO: mAP: 61.0%
+2025-12-07 10:49:02,871 DeMo.train INFO: CMC curve, Rank-1  :60.0%
+2025-12-07 10:49:02,872 DeMo.train INFO: CMC curve, Rank-5  :70.8%
+2025-12-07 10:49:02,872 DeMo.train INFO: CMC curve, Rank-10 :76.7%
+2025-12-07 10:49:02,872 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:49:03,853 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:49:03,853 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:49:03,853 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:49:03,853 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:49:03,853 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:49:03,853 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:49:11,718 DeMo.train INFO: Epoch[46] Iteration[10/54] Loss: 0.446, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:49:14,350 DeMo.train INFO: Epoch[46] Iteration[20/54] Loss: 0.447, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:49:16,973 DeMo.train INFO: Epoch[46] Iteration[30/54] Loss: 0.448, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:49:19,609 DeMo.train INFO: Epoch[46] Iteration[40/54] Loss: 0.447, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:49:22,254 DeMo.train INFO: Epoch[46] Iteration[50/54] Loss: 0.447, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:49:23,158 DeMo.train INFO: Epoch 46 done. Time per batch: 0.364[s] Speed: 175.7[samples/s]
+2025-12-07 10:49:23,160 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:49:23,161 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:49:23,161 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:49:41,982 DeMo.train INFO: Validation Results - Epoch: 46
+2025-12-07 10:49:41,982 DeMo.train INFO: mAP: 62.8%
+2025-12-07 10:49:41,982 DeMo.train INFO: CMC curve, Rank-1  :61.7%
+2025-12-07 10:49:41,982 DeMo.train INFO: CMC curve, Rank-5  :76.6%
+2025-12-07 10:49:41,982 DeMo.train INFO: CMC curve, Rank-10 :82.3%
+2025-12-07 10:49:41,983 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:49:43,989 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:49:43,989 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:49:43,989 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:49:55,321 DeMo.train INFO: Validation Results - Epoch: 46
+2025-12-07 10:49:55,321 DeMo.train INFO: mAP: 57.2%
+2025-12-07 10:49:55,322 DeMo.train INFO: CMC curve, Rank-1  :58.1%
+2025-12-07 10:49:55,322 DeMo.train INFO: CMC curve, Rank-5  :68.2%
+2025-12-07 10:49:55,322 DeMo.train INFO: CMC curve, Rank-10 :73.9%
+2025-12-07 10:49:55,322 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:49:55,617 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:49:55,617 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:49:55,617 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:50:07,219 DeMo.train INFO: Validation Results - Epoch: 46
+2025-12-07 10:50:07,219 DeMo.train INFO: mAP: 61.1%
+2025-12-07 10:50:07,219 DeMo.train INFO: CMC curve, Rank-1  :59.8%
+2025-12-07 10:50:07,220 DeMo.train INFO: CMC curve, Rank-5  :71.2%
+2025-12-07 10:50:07,220 DeMo.train INFO: CMC curve, Rank-10 :77.0%
+2025-12-07 10:50:07,220 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:50:07,537 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:50:07,537 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:50:07,537 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:50:07,537 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:50:07,537 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:50:07,537 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:50:14,583 DeMo.train INFO: Epoch[47] Iteration[10/54] Loss: 0.445, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:50:17,281 DeMo.train INFO: Epoch[47] Iteration[20/54] Loss: 0.446, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:50:19,879 DeMo.train INFO: Epoch[47] Iteration[30/54] Loss: 0.445, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:50:22,481 DeMo.train INFO: Epoch[47] Iteration[40/54] Loss: 0.446, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:50:25,057 DeMo.train INFO: Epoch[47] Iteration[50/54] Loss: 0.445, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:50:25,966 DeMo.train INFO: Epoch 47 done. Time per batch: 0.348[s] Speed: 184.1[samples/s]
+2025-12-07 10:50:25,974 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:50:25,975 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:50:25,975 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:50:41,632 DeMo.train INFO: Validation Results - Epoch: 47
+2025-12-07 10:50:41,633 DeMo.train INFO: mAP: 63.0%
+2025-12-07 10:50:41,634 DeMo.train INFO: CMC curve, Rank-1  :61.8%
+2025-12-07 10:50:41,635 DeMo.train INFO: CMC curve, Rank-5  :77.2%
+2025-12-07 10:50:41,636 DeMo.train INFO: CMC curve, Rank-10 :82.5%
+2025-12-07 10:50:41,637 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:50:43,755 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:50:43,755 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:50:43,756 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:50:54,740 DeMo.train INFO: Validation Results - Epoch: 47
+2025-12-07 10:50:54,740 DeMo.train INFO: mAP: 57.5%
+2025-12-07 10:50:54,740 DeMo.train INFO: CMC curve, Rank-1  :58.6%
+2025-12-07 10:50:54,740 DeMo.train INFO: CMC curve, Rank-5  :68.4%
+2025-12-07 10:50:54,740 DeMo.train INFO: CMC curve, Rank-10 :73.8%
+2025-12-07 10:50:54,740 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:50:55,453 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:50:55,453 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:50:55,453 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:51:07,201 DeMo.train INFO: Validation Results - Epoch: 47
+2025-12-07 10:51:07,202 DeMo.train INFO: mAP: 61.3%
+2025-12-07 10:51:07,202 DeMo.train INFO: CMC curve, Rank-1  :60.0%
+2025-12-07 10:51:07,202 DeMo.train INFO: CMC curve, Rank-5  :71.5%
+2025-12-07 10:51:07,202 DeMo.train INFO: CMC curve, Rank-10 :77.3%
+2025-12-07 10:51:07,202 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:51:07,751 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:51:07,751 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:51:07,751 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:51:07,751 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:51:07,751 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:51:07,751 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:51:14,298 DeMo.train INFO: Epoch[48] Iteration[10/54] Loss: 0.446, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:51:17,372 DeMo.train INFO: Epoch[48] Iteration[20/54] Loss: 0.446, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:51:19,972 DeMo.train INFO: Epoch[48] Iteration[30/54] Loss: 0.446, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:51:22,583 DeMo.train INFO: Epoch[48] Iteration[40/54] Loss: 0.445, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:51:25,194 DeMo.train INFO: Epoch[48] Iteration[50/54] Loss: 0.445, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:51:26,120 DeMo.train INFO: Epoch 48 done. Time per batch: 0.347[s] Speed: 184.7[samples/s]
+2025-12-07 10:51:26,121 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:51:26,122 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:51:26,122 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:51:37,125 DeMo.train INFO: Validation Results - Epoch: 48
+2025-12-07 10:51:37,126 DeMo.train INFO: mAP: 62.8%
+2025-12-07 10:51:37,127 DeMo.train INFO: CMC curve, Rank-1  :61.8%
+2025-12-07 10:51:37,129 DeMo.train INFO: CMC curve, Rank-5  :77.2%
+2025-12-07 10:51:37,130 DeMo.train INFO: CMC curve, Rank-10 :82.3%
+2025-12-07 10:51:37,130 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:51:38,942 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:51:38,943 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:51:38,943 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:51:54,524 DeMo.train INFO: Validation Results - Epoch: 48
+2025-12-07 10:51:54,524 DeMo.train INFO: mAP: 57.3%
+2025-12-07 10:51:54,525 DeMo.train INFO: CMC curve, Rank-1  :58.4%
+2025-12-07 10:51:54,525 DeMo.train INFO: CMC curve, Rank-5  :68.7%
+2025-12-07 10:51:54,525 DeMo.train INFO: CMC curve, Rank-10 :73.8%
+2025-12-07 10:51:54,525 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:51:55,112 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:51:55,113 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:51:55,113 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:52:06,833 DeMo.train INFO: Validation Results - Epoch: 48
+2025-12-07 10:52:06,833 DeMo.train INFO: mAP: 61.2%
+2025-12-07 10:52:06,833 DeMo.train INFO: CMC curve, Rank-1  :60.3%
+2025-12-07 10:52:06,833 DeMo.train INFO: CMC curve, Rank-5  :71.4%
+2025-12-07 10:52:06,833 DeMo.train INFO: CMC curve, Rank-10 :77.2%
+2025-12-07 10:52:06,834 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:52:07,731 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:52:07,731 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:52:07,731 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:52:07,731 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:52:07,732 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:52:07,732 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:52:14,295 DeMo.train INFO: Epoch[49] Iteration[10/54] Loss: 0.445, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:52:16,993 DeMo.train INFO: Epoch[49] Iteration[20/54] Loss: 0.446, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:52:19,605 DeMo.train INFO: Epoch[49] Iteration[30/54] Loss: 0.445, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:52:22,226 DeMo.train INFO: Epoch[49] Iteration[40/54] Loss: 0.445, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:52:24,859 DeMo.train INFO: Epoch[49] Iteration[50/54] Loss: 0.444, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:52:25,777 DeMo.train INFO: Epoch 49 done. Time per batch: 0.340[s] Speed: 188.0[samples/s]
+2025-12-07 10:52:25,779 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:52:25,779 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:52:25,779 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:52:37,053 DeMo.train INFO: Validation Results - Epoch: 49
+2025-12-07 10:52:37,053 DeMo.train INFO: mAP: 62.9%
+2025-12-07 10:52:37,054 DeMo.train INFO: CMC curve, Rank-1  :61.7%
+2025-12-07 10:52:37,054 DeMo.train INFO: CMC curve, Rank-5  :77.2%
+2025-12-07 10:52:37,054 DeMo.train INFO: CMC curve, Rank-10 :82.4%
+2025-12-07 10:52:37,054 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:52:38,809 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:52:38,809 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:52:38,809 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:52:50,604 DeMo.train INFO: Validation Results - Epoch: 49
+2025-12-07 10:52:50,605 DeMo.train INFO: mAP: 57.5%
+2025-12-07 10:52:50,605 DeMo.train INFO: CMC curve, Rank-1  :58.3%
+2025-12-07 10:52:50,607 DeMo.train INFO: CMC curve, Rank-5  :68.8%
+2025-12-07 10:52:50,608 DeMo.train INFO: CMC curve, Rank-10 :74.2%
+2025-12-07 10:52:50,608 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:52:50,648 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:52:50,648 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:52:50,649 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:53:06,482 DeMo.train INFO: Validation Results - Epoch: 49
+2025-12-07 10:53:06,482 DeMo.train INFO: mAP: 61.3%
+2025-12-07 10:53:06,482 DeMo.train INFO: CMC curve, Rank-1  :60.2%
+2025-12-07 10:53:06,482 DeMo.train INFO: CMC curve, Rank-5  :71.4%
+2025-12-07 10:53:06,483 DeMo.train INFO: CMC curve, Rank-10 :77.5%
+2025-12-07 10:53:06,483 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:53:06,841 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:53:06,841 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:53:06,841 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:53:06,841 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:53:06,841 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:53:06,841 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:53:14,640 DeMo.train INFO: Epoch[50] Iteration[10/54] Loss: 0.448, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:53:17,963 DeMo.train INFO: Epoch[50] Iteration[20/54] Loss: 0.447, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:53:20,615 DeMo.train INFO: Epoch[50] Iteration[30/54] Loss: 0.446, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:53:23,215 DeMo.train INFO: Epoch[50] Iteration[40/54] Loss: 0.446, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:53:25,869 DeMo.train INFO: Epoch[50] Iteration[50/54] Loss: 0.446, Acc: 1.000, Base Lr: 3.50e-05
+2025-12-07 10:53:26,778 DeMo.train INFO: Epoch 50 done. Time per batch: 0.376[s] Speed: 170.1[samples/s]
+2025-12-07 10:53:26,779 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:53:26,780 DeMo.train INFO: Current is the ori feature testing!
+2025-12-07 10:53:26,780 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:53:38,669 DeMo.train INFO: Validation Results - Epoch: 50
+2025-12-07 10:53:38,670 DeMo.train INFO: mAP: 62.9%
+2025-12-07 10:53:38,670 DeMo.train INFO: CMC curve, Rank-1  :61.5%
+2025-12-07 10:53:38,670 DeMo.train INFO: CMC curve, Rank-5  :76.6%
+2025-12-07 10:53:38,670 DeMo.train INFO: CMC curve, Rank-10 :82.4%
+2025-12-07 10:53:38,670 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:53:40,018 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:53:40,019 DeMo.train INFO: Current is the moe feature testing!
+2025-12-07 10:53:40,019 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:53:51,712 DeMo.train INFO: Validation Results - Epoch: 50
+2025-12-07 10:53:51,713 DeMo.train INFO: mAP: 57.4%
+2025-12-07 10:53:51,713 DeMo.train INFO: CMC curve, Rank-1  :58.4%
+2025-12-07 10:53:51,713 DeMo.train INFO: CMC curve, Rank-5  :68.9%
+2025-12-07 10:53:51,713 DeMo.train INFO: CMC curve, Rank-10 :74.3%
+2025-12-07 10:53:51,713 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:53:51,906 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:53:51,906 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-07 10:53:51,907 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-07 10:54:03,676 DeMo.train INFO: Validation Results - Epoch: 50
+2025-12-07 10:54:03,677 DeMo.train INFO: mAP: 61.2%
+2025-12-07 10:54:03,677 DeMo.train INFO: CMC curve, Rank-1  :60.4%
+2025-12-07 10:54:03,677 DeMo.train INFO: CMC curve, Rank-5  :71.5%
+2025-12-07 10:54:03,677 DeMo.train INFO: CMC curve, Rank-10 :77.3%
+2025-12-07 10:54:03,677 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:54:04,006 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-07 10:54:04,006 DeMo.train INFO: Best mAP: 64.7%
+2025-12-07 10:54:04,006 DeMo.train INFO: Best Rank-1: 65.4%
+2025-12-07 10:54:04,006 DeMo.train INFO: Best Rank-5: 77.2%
+2025-12-07 10:54:04,006 DeMo.train INFO: Best Rank-10: 82.1%
+2025-12-07 10:54:04,007 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
