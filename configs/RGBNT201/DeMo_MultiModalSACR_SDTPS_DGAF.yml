@@ -1,0 +1,109 @@
+MODEL:
+  TRANSFORMER_TYPE: 'ViT-B-16'
+  STRIDE_SIZE: [ 16, 16 ]
+  SIE_CAMERA: True
+  DIRECT: 1
+  SIE_COE: 1.0
+  ID_LOSS_WEIGHT: 0.25
+  TRIPLET_LOSS_WEIGHT: 1.0
+  GLOBAL_LOCAL: True
+  # Disable HDM and ATM
+  HDM: False
+  ATM: False
+  # MultiModal-SACR: Multi-modal SACR with cross-modal interaction
+  # Flow: MultiModalSACR (concat->SACR->split) -> SDTPS -> DGAF
+  USE_SACR: False                    # Disable single-modal SACR
+  USE_MULTIMODAL_SACR: True          # Enable MultiModal-SACR (cross-modal interaction)
+  MULTIMODAL_SACR_VERSION: 'v1'      # v1 or v2 (v2 has cross-modal attention)
+  SACR_DILATION_RATES: [2, 3, 4]     # Atrous convolution dilation rates
+  # SDTPS configuration
+  USE_SDTPS: True                    # Enable SDTPS (Token selection)
+  SDTPS_SPARSE_RATIO: 0.7            # Selection ratio
+  SDTPS_AGGR_RATIO: 0.5              # Aggregation ratio
+  SDTPS_BETA: 0.25                   # Score combination weight
+  SDTPS_USE_GUMBEL: False            # Disable Gumbel (numerical instability)
+  SDTPS_GUMBEL_TAU: 5.0              # Gumbel temperature
+  SDTPS_LOSS_WEIGHT: 2.0             # SDTPS branch loss weight
+  # LIF disabled (per researcher suggestion)
+  USE_LIF: False
+  # DGAF: Dual-Gated Adaptive Fusion
+  USE_DGAF: True                     # Enable DGAF for adaptive fusion
+  DGAF_TAU: 1.0                      # Temperature for entropy gate
+  DGAF_INIT_ALPHA: 0.5               # Initial alpha (balance IEG and MIG)
+  HEAD: 4
+
+INPUT:
+  SIZE_TRAIN: [ 256, 128 ]
+  SIZE_TEST: [ 256, 128 ]
+  PROB: 0.5 # random horizontal flip
+  RE_PROB: 0.5 # random erasing
+  PADDING: 10
+
+DATALOADER:
+  SAMPLER: 'softmax_triplet'
+  NUM_INSTANCE: 8
+  NUM_WORKERS: 14
+
+DATASETS:
+  NAMES: ('RGBNT201')
+  ROOT_DIR: '..'
+
+SOLVER:
+  # Researcher suggested hyperparameters
+  BASE_LR: 5e-6                      # Very small learning rate
+  MAX_EPOCHS: 40                     # Training epochs
+  STEPS: [20, 30]                    # Learning rate decay milestones
+  GAMMA: 0.1                         # Learning rate decay factor
+  WARMUP_ITERS: 0                    # No warmup (start from full LR)
+  WARMUP_FACTOR: 0.01
+  WARMUP_METHOD: 'linear'
+  OPTIMIZER_NAME: 'Adam'
+  IMS_PER_BATCH: 64
+  EVAL_PERIOD: 1
+  CHECKPOINT_PERIOD: 10
+
+TEST:
+  IMS_PER_BATCH: 128
+  RE_RANKING: 'no'
+  WEIGHT: ''
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+  MISS: "nothing"
+
+OUTPUT_DIR: '..'
+
+# ============================================================================
+# Architecture Summary
+# ============================================================================
+# Pipeline: Backbone -> MultiModalSACR -> SDTPS -> DGAF
+#
+# 1. Backbone (ViT-B-16):
+#    - Input: (B, 3, 256, 128) RGB/NIR/TIR images
+#    - Output: patch features (B, 128, 512), global features (B, 512)
+#
+# 2. MultiModal-SACR (Cross-modal interaction):
+#    - Concatenate 3 modalities: 3x(B, 128, 512) -> (B, 384, 512)
+#    - Reshape to 2D: (B, 512, 48, 8) - 3 modalities stacked vertically
+#    - Apply multi-scale dilated convs + channel attention
+#    - Split back to 3 modalities: (B, 384, 512) -> 3x(B, 128, 512)
+#    - Cross-modal information exchange through dilated convolutions
+#
+# 3. SDTPS (Token Selection):
+#    - Input: patch features (B, 128, 512) + global features (B, 512)
+#    - Select important tokens using sparse_ratio=0.7
+#    - Output: selected tokens (B, K+1, 512) per modality
+#
+# 4. DGAF (Dual-Gated Adaptive Fusion):
+#    - Input: 3 modality features (B, 512) each
+#    - Entropy gate (IEG): information-aware weighting
+#    - Modality importance gate (MIG): inter-modal weighting
+#    - Output: fused feature (B, 3*512)
+#
+# Key differences from previous configs:
+# - Removed LIF (quality-aware fusion)
+# - Replaced single-modal SACR with MultiModal-SACR
+# - Uses researcher suggested hyperparameters:
+#   - Very small LR (5e-6) with MultiStepLR scheduler
+#   - No warmup (WARMUP_ITERS: 0)
+#   - 40 epochs with decay at [20, 30]
+# ============================================================================

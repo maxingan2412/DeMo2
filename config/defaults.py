@@ -54,6 +54,10 @@ _C.MODEL.LIF_LAYER = 3 # which layer to apply LIF (3, 4, or 5)
 _C.MODEL.USE_DGAF = False # whether to use Dual-Gated Adaptive Fusion after SDTPS
 _C.MODEL.DGAF_TAU = 1.0 # temperature for entropy gate (lower = sharper)
 _C.MODEL.DGAF_INIT_ALPHA = 0.5 # initial value for alpha (balance IEG and MIG)
+# MultiModal-SACR: 多模态交互版本的 SACR
+# 将三个模态沿 token 维度拼接，在 SACR 中进行跨模态交互，然后拆分
+_C.MODEL.USE_MULTIMODAL_SACR = False # whether to use MultiModal SACR after SDTPS
+_C.MODEL.MULTIMODAL_SACR_VERSION = 'v1' # 'v1' or 'v2' (v2 has cross-modal attention)
 # If train with label smooth, options: 'on', 'off'
 _C.MODEL.IF_LABELSMOOTH = 'on'
 # If train with the contact feature

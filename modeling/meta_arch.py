@@ -74,15 +74,15 @@ class build_transformer(nn.Module):
 
             if cfg.MODEL.SIE_CAMERA and cfg.MODEL.SIE_VIEW:
                 self.cv_embed = nn.Parameter(torch.zeros(camera_num * view_num, 1, 768))
-                trunc_normal_(self.cv_embed, std=.02)
+                trunc_normal_(self.cv_embed, std=1e-6)
                 print('camera number is : {}'.format(camera_num))
             elif cfg.MODEL.SIE_CAMERA:
                 self.cv_embed = nn.Parameter(torch.zeros(camera_num, 1, 768))
-                trunc_normal_(self.cv_embed, std=.02)
+                trunc_normal_(self.cv_embed, std=1e-6)
                 print('camera number is : {}'.format(camera_num))
             elif cfg.MODEL.SIE_VIEW:
                 self.cv_embed = nn.Parameter(torch.zeros(view_num, 1, 768))
-                trunc_normal_(self.cv_embed, std=.02)
+                trunc_normal_(self.cv_embed, std=1e-6)
                 print('camera number is : {}'.format(view_num))
 
         self.num_classes = num_classes

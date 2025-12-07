@@ -10,6 +10,7 @@ from modeling.meta_arch import build_transformer, weights_init_classifier, weigh
 from modeling.moe.AttnMOE import GeneralFusion, QuickGELU
 from modeling.sdtps_complete import MultiModalSDTPS
 from modeling.sacr import SACR
+from modeling.multimodal_sacr import MultiModalSACR, MultiModalSACRv2
 from modeling.trimodal_lif import TrimodalLIF, TrimodalLIFLoss
 from modeling.dual_gated_fusion import DualGatedAdaptiveFusion, DualGatedAdaptiveFusionV2, DualGatedPostFusion
 import torch
@@ -42,6 +43,7 @@ class DeMo(nn.Module):
         self.head = cfg.MODEL.HEAD
         self.USE_LIF = cfg.MODEL.USE_LIF
         self.USE_DGAF = cfg.MODEL.USE_DGAF
+        self.USE_MULTIMODAL_SACR = cfg.MODEL.USE_MULTIMODAL_SACR
         if self.GLOBAL_LOCAL:
             self.pool = nn.AdaptiveAvgPool1d(1)
             self.rgb_reduce = nn.Sequential(nn.LayerNorm(2 * self.feat_dim),
@@ -86,6 +88,29 @@ class DeMo(nn.Module):
                 tau=cfg.MODEL.DGAF_TAU,
                 init_alpha=cfg.MODEL.DGAF_INIT_ALPHA,
             )
+
+        # MultiModal-SACR: 多模态交互版本的 SACR
+        # 新流程: MultiModalSACR (concat→SACR→split) → SDTPS → DGAF
+        if self.USE_MULTIMODAL_SACR:
+            h, w = cfg.INPUT.SIZE_TRAIN
+            stride_h, stride_w = cfg.MODEL.STRIDE_SIZE
+            patch_h = h // stride_h  # 256 / 16 = 16
+            patch_w = w // stride_w  # 128 / 16 = 8
+
+            if cfg.MODEL.MULTIMODAL_SACR_VERSION == 'v2':
+                self.multimodal_sacr = MultiModalSACRv2(
+                    token_dim=self.feat_dim,
+                    height=patch_h,
+                    width=patch_w,
+                    dilation_rates=cfg.MODEL.SACR_DILATION_RATES,
+                )
+            else:
+                self.multimodal_sacr = MultiModalSACR(
+                    token_dim=self.feat_dim,
+                    height=patch_h,
+                    width=patch_w,
+                    dilation_rates=cfg.MODEL.SACR_DILATION_RATES,
+                )
 
         if self.HDM or self.ATM:
             self.generalFusion = GeneralFusion(feat_dim=self.feat_dim, num_experts=7, head=self.head, reg_weight=0,
@@ -185,8 +210,12 @@ class DeMo(nn.Module):
                 NI_global = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))
                 TI_global = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))
 
-            # SACR: 对 patch 特征进行多尺度上下文增强（三个模态共用）
-            if self.USE_SACR:
+            # SACR: 对 patch 特征进行多尺度上下文增强
+            if self.USE_MULTIMODAL_SACR:
+                # MultiModal-SACR: 三模态拼接 → SACR → 拆分（跨模态交互）
+                RGB_cash, NI_cash, TI_cash = self.multimodal_sacr(RGB_cash, NI_cash, TI_cash)
+            elif self.USE_SACR:
+                # 单模态 SACR：三个模态独立处理
                 RGB_cash = self.sacr(RGB_cash)  # (B, N, C) → (B, N, C)
                 NI_cash = self.sacr(NI_cash)    # (B, N, C) → (B, N, C)
                 TI_cash = self.sacr(TI_cash)    # (B, N, C) → (B, N, C)
@@ -336,8 +365,12 @@ class DeMo(nn.Module):
                 NI_global = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))
                 TI_global = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))
 
-            # SACR: 对 patch 特征进行多尺度上下文增强（三个模态共用）
-            if self.USE_SACR:
+            # SACR: 对 patch 特征进行多尺度上下文增强
+            if self.USE_MULTIMODAL_SACR:
+                # MultiModal-SACR: 三模态拼接 → SACR → 拆分（跨模态交互）
+                RGB_cash, NI_cash, TI_cash = self.multimodal_sacr(RGB_cash, NI_cash, TI_cash)
+            elif self.USE_SACR:
+                # 单模态 SACR：三个模态独立处理
                 RGB_cash = self.sacr(RGB_cash)  # (B, N, C) → (B, N, C)
                 NI_cash = self.sacr(NI_cash)    # (B, N, C) → (B, N, C)
                 TI_cash = self.sacr(TI_cash)    # (B, N, C) → (B, N, C)
