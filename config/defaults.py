@@ -161,6 +161,8 @@ _C.SOLVER.WARMUP_FACTOR = 0.01
 _C.SOLVER.WARMUP_ITERS = 10
 # method of warm up, option: 'constant','linear'
 _C.SOLVER.WARMUP_METHOD = "linear"
+# Learning rate scheduler type: 'cosine' or 'multistep'
+_C.SOLVER.LR_SCHEDULER = 'cosine'
 
 _C.SOLVER.COSINE_MARGIN = 0.5
 _C.SOLVER.COSINE_SCALE = 30
