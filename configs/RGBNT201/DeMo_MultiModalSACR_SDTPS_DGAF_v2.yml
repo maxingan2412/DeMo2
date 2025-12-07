@@ -1,0 +1,84 @@
+MODEL:
+  TRANSFORMER_TYPE: 'ViT-B-16'
+  STRIDE_SIZE: [ 16, 16 ]
+  SIE_CAMERA: True
+  DIRECT: 1
+  SIE_COE: 1.0
+  ID_LOSS_WEIGHT: 0.25
+  TRIPLET_LOSS_WEIGHT: 1.0
+  GLOBAL_LOCAL: True
+  # Disable HDM and ATM
+  HDM: False
+  ATM: False
+  # MultiModal-SACR: Multi-modal SACR with cross-modal interaction
+  USE_SACR: False                    # Disable single-modal SACR
+  USE_MULTIMODAL_SACR: True          # Enable MultiModal-SACR
+  MULTIMODAL_SACR_VERSION: 'v1'
+  SACR_DILATION_RATES: [2, 3, 4]
+  # SDTPS configuration
+  USE_SDTPS: True
+  SDTPS_SPARSE_RATIO: 0.7
+  SDTPS_AGGR_RATIO: 0.5
+  SDTPS_BETA: 0.25
+  SDTPS_USE_GUMBEL: False
+  SDTPS_GUMBEL_TAU: 5.0
+  SDTPS_LOSS_WEIGHT: 2.0
+  # LIF disabled
+  USE_LIF: False
+  # DGAF: Dual-Gated Adaptive Fusion
+  USE_DGAF: True
+  DGAF_TAU: 1.0
+  DGAF_INIT_ALPHA: 0.5
+  HEAD: 4
+
+INPUT:
+  SIZE_TRAIN: [ 256, 128 ]
+  SIZE_TEST: [ 256, 128 ]
+  PROB: 0.5
+  RE_PROB: 0.5
+  PADDING: 10
+
+DATALOADER:
+  SAMPLER: 'softmax_triplet'
+  NUM_INSTANCE: 8
+  NUM_WORKERS: 14
+
+DATASETS:
+  NAMES: ('RGBNT201')
+  ROOT_DIR: '..'
+
+SOLVER:
+  # 修正后的超参数 - 使用更合理的学习率
+  BASE_LR: 0.00035                   # 恢复到正常学习率 (vs 5e-6)
+  MAX_EPOCHS: 50                     # 增加训练轮数
+  STEPS: [30, 40]                    # 调整衰减点
+  GAMMA: 0.1
+  WARMUP_ITERS: 10                   # 添加 warmup
+  WARMUP_FACTOR: 0.01
+  WARMUP_METHOD: 'linear'
+  OPTIMIZER_NAME: 'Adam'
+  IMS_PER_BATCH: 64
+  EVAL_PERIOD: 1
+  CHECKPOINT_PERIOD: 10
+
+TEST:
+  IMS_PER_BATCH: 128
+  RE_RANKING: 'no'
+  WEIGHT: ''
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+  MISS: "nothing"
+
+OUTPUT_DIR: '..'
+
+# ============================================================================
+# v2 版本修改说明
+# ============================================================================
+# 相比 v1 (研究者原始建议):
+# - BASE_LR: 5e-6 → 0.00035 (提高 70 倍，与之前有效配置一致)
+# - MAX_EPOCHS: 40 → 50
+# - STEPS: [20, 30] → [30, 40] (延迟衰减)
+# - WARMUP_ITERS: 0 → 10 (添加 warmup)
+#
+# 原因: 5e-6 的学习率太小，衰减到 5e-8 后模型基本不更新
+# ============================================================================
