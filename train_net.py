@@ -2,7 +2,7 @@ from utils.logger import setup_logger
 from data import make_dataloader
 from modeling import make_model
 from solver.make_optimizer import make_optimizer
-from solver.scheduler_factory import create_scheduler
+from solver.scheduler_factory import create_scheduler_cosine
 from layers.make_loss import make_loss
 from engine.processor import do_train
 import random
@@ -86,7 +86,7 @@ if __name__ == '__main__':
 
     optimizer, optimizer_center = make_optimizer(cfg, model, center_criterion)
 
-    scheduler = create_scheduler(cfg, optimizer)
+    scheduler = create_scheduler_cosine(cfg, optimizer)
     do_train(
         cfg,
         model,
