@@ -12,7 +12,7 @@ from modeling.sdtps_complete import MultiModalSDTPS
 from modeling.sacr import SACR
 from modeling.multimodal_sacr import MultiModalSACR, MultiModalSACRv2
 from modeling.trimodal_lif import TrimodalLIF, TrimodalLIFLoss
-from modeling.dual_gated_fusion import DualGatedAdaptiveFusion, DualGatedAdaptiveFusionV2, DualGatedPostFusion
+from modeling.dual_gated_fusion import DualGatedAdaptiveFusion, DualGatedAdaptiveFusionV2, DualGatedPostFusion, DualGatedAdaptiveFusionV3
 import torch
 
 
@@ -82,12 +82,24 @@ class DeMo(nn.Module):
         # DGAF: Dual-Gated Adaptive Fusion (基于 AGFN 论文)
         # 用于 SDTPS 输出的自适应融合，替代简单的 concat
         if self.USE_DGAF:
-            self.dgaf = DualGatedPostFusion(
-                feat_dim=self.feat_dim,
-                output_dim=3 * self.feat_dim,  # 保持与原 concat 输出一致
-                tau=cfg.MODEL.DGAF_TAU,
-                init_alpha=cfg.MODEL.DGAF_INIT_ALPHA,
-            )
+            self.DGAF_VERSION = cfg.MODEL.DGAF_VERSION
+            if self.DGAF_VERSION == 'v3':
+                # V3: 内置 Attention Pooling，直接接受 SDTPS 的 (B, K+1, C) 输出
+                self.dgaf = DualGatedAdaptiveFusionV3(
+                    feat_dim=self.feat_dim,
+                    output_dim=3 * self.feat_dim,
+                    tau=cfg.MODEL.DGAF_TAU,
+                    init_alpha=cfg.MODEL.DGAF_INIT_ALPHA,
+                    num_heads=cfg.MODEL.DGAF_NUM_HEADS,
+                )
+            else:
+                # V1: 需要先 mean pooling，再输入 (B, C)
+                self.dgaf = DualGatedPostFusion(
+                    feat_dim=self.feat_dim,
+                    output_dim=3 * self.feat_dim,
+                    tau=cfg.MODEL.DGAF_TAU,
+                    init_alpha=cfg.MODEL.DGAF_INIT_ALPHA,
+                )
 
         # MultiModal-SACR: 多模态交互版本的 SACR
         # 新流程: MultiModalSACR (concat→SACR→split) → SDTPS → DGAF
@@ -265,17 +277,23 @@ class DeMo(nn.Module):
                     RGB_cash, NI_cash, TI_cash,
                     RGB_global, NI_global, TI_global
                 )
-                # 对增强的 tokens 进行池化得到全局特征
-                RGB_sdtps = RGB_enhanced.mean(dim=1)  # (B, K+1, C) → (B, C)
-                NI_sdtps = NI_enhanced.mean(dim=1)    # (B, K+1, C) → (B, C)
-                TI_sdtps = TI_enhanced.mean(dim=1)    # (B, K+1, C) → (B, C)
 
                 # DGAF: 使用双门控自适应融合替代简单 concat
                 if self.USE_DGAF:
-                    # 信息熵门控 + 模态重要性门控 → 自适应融合
-                    sdtps_feat = self.dgaf(RGB_sdtps, NI_sdtps, TI_sdtps)  # (B, 3C)
+                    if self.DGAF_VERSION == 'v3':
+                        # V3: 直接输入 tokens，内置 attention pooling
+                        sdtps_feat = self.dgaf(RGB_enhanced, NI_enhanced, TI_enhanced)  # (B, 3C)
+                    else:
+                        # V1: 先 mean pooling，再输入 (B, C)
+                        RGB_sdtps = RGB_enhanced.mean(dim=1)  # (B, K+1, C) → (B, C)
+                        NI_sdtps = NI_enhanced.mean(dim=1)
+                        TI_sdtps = TI_enhanced.mean(dim=1)
+                        sdtps_feat = self.dgaf(RGB_sdtps, NI_sdtps, TI_sdtps)  # (B, 3C)
                 else:
-                    # 原始方式：简单拼接
+                    # 原始方式：mean pooling + 简单拼接
+                    RGB_sdtps = RGB_enhanced.mean(dim=1)  # (B, K+1, C) → (B, C)
+                    NI_sdtps = NI_enhanced.mean(dim=1)
+                    TI_sdtps = TI_enhanced.mean(dim=1)
                     sdtps_feat = torch.cat([RGB_sdtps, NI_sdtps, TI_sdtps], dim=-1)  # (B, 3C)
 
                 sdtps_score = self.classifier_sdtps(self.bottleneck_sdtps(sdtps_feat))
@@ -409,14 +427,23 @@ class DeMo(nn.Module):
                     RGB_cash, NI_cash, TI_cash,
                     RGB_global, NI_global, TI_global
                 )
-                RGB_sdtps = RGB_enhanced.mean(dim=1)
-                NI_sdtps = NI_enhanced.mean(dim=1)
-                TI_sdtps = TI_enhanced.mean(dim=1)
 
                 # DGAF: 使用双门控自适应融合替代简单 concat
                 if self.USE_DGAF:
-                    sdtps_feat = self.dgaf(RGB_sdtps, NI_sdtps, TI_sdtps)
+                    if self.DGAF_VERSION == 'v3':
+                        # V3: 直接输入 tokens，内置 attention pooling
+                        sdtps_feat = self.dgaf(RGB_enhanced, NI_enhanced, TI_enhanced)
+                    else:
+                        # V1: 先 mean pooling，再输入 (B, C)
+                        RGB_sdtps = RGB_enhanced.mean(dim=1)
+                        NI_sdtps = NI_enhanced.mean(dim=1)
+                        TI_sdtps = TI_enhanced.mean(dim=1)
+                        sdtps_feat = self.dgaf(RGB_sdtps, NI_sdtps, TI_sdtps)
                 else:
+                    # 原始方式：mean pooling + 简单拼接
+                    RGB_sdtps = RGB_enhanced.mean(dim=1)
+                    NI_sdtps = NI_enhanced.mean(dim=1)
+                    TI_sdtps = TI_enhanced.mean(dim=1)
                     sdtps_feat = torch.cat([RGB_sdtps, NI_sdtps, TI_sdtps], dim=-1)
 
                 if return_pattern == 1:

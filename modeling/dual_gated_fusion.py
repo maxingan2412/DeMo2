@@ -555,6 +555,193 @@ class DualGatedPostFusion(nn.Module):
             return torch.cat([h_rgb_out, h_nir_out, h_tir_out], dim=-1)  # (B, 3C)
 
 
+class DualGatedAdaptiveFusionV3(nn.Module):
+    """
+    双门控自适应融合 V3 - 直接处理 SDTPS 输出
+
+    核心改进：
+    1. 内置 Attention Pooling：用可学习 query 从 tokens 中聚合信息（替代 mean pooling）
+    2. 直接接受 SDTPS 输出 (B, K+1, C)，无需外部池化
+    3. 保留双门控机制：IEG（熵门控）+ MIG（重要性门控）
+
+    流程：
+        输入: 3 × (B, K+1, C)  ← SDTPS 直接输出
+              ↓
+        Attention Pooling (内置)
+              ↓
+        3 × (B, C)
+              ↓
+        双门控融合 (IEG + MIG)
+              ↓
+        输出: (B, 3C)
+
+    Args:
+        feat_dim: 特征维度 (512 for CLIP, 768 for ViT)
+        tau: 熵门控的温度参数
+        init_alpha: α 的初始值（平衡 IEG 和 MIG）
+        num_heads: attention pooling 的头数
+    """
+
+    def __init__(
+        self,
+        feat_dim: int,
+        output_dim: int = None,
+        tau: float = 1.0,
+        init_alpha: float = 0.5,
+        num_heads: int = 8,
+    ):
+        super().__init__()
+        self.feat_dim = feat_dim
+        self.output_dim = output_dim or (3 * feat_dim)
+        self.tau = tau
+        self.num_heads = num_heads
+
+        # ========== Attention Pooling (替代 mean pooling) ==========
+        # 每个模态有独立的可学习 query
+        scale = feat_dim ** -0.5
+        self.rgb_query = nn.Parameter(scale * torch.randn(1, 1, feat_dim))
+        self.nir_query = nn.Parameter(scale * torch.randn(1, 1, feat_dim))
+        self.tir_query = nn.Parameter(scale * torch.randn(1, 1, feat_dim))
+
+        # 共享的 attention 层（减少参数）
+        self.attn_pool = nn.MultiheadAttention(
+            embed_dim=feat_dim,
+            num_heads=num_heads,
+            batch_first=True
+        )
+        self.attn_norm = nn.LayerNorm(feat_dim)
+
+        # ========== 信息熵门控 (IEG) ==========
+        self.entropy_proj = nn.Linear(feat_dim, feat_dim)
+
+        # ========== 模态重要性门控 (MIG) ==========
+        self.gate_net = nn.Sequential(
+            nn.Linear(3 * feat_dim, feat_dim),
+            nn.LayerNorm(feat_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(feat_dim, 3),
+            nn.Sigmoid()
+        )
+
+        # ========== 可学习的平衡参数 α ==========
+        self._alpha = nn.Parameter(torch.tensor(init_alpha))
+
+        # ========== 输出投影 ==========
+        if self.output_dim == feat_dim:
+            self.output_proj = nn.Sequential(
+                nn.Linear(feat_dim, feat_dim),
+                nn.LayerNorm(feat_dim),
+            )
+            self.modal_enhance = None
+        else:
+            self.output_proj = None
+            self.modal_enhance = nn.Sequential(
+                nn.Linear(feat_dim, feat_dim),
+                nn.LayerNorm(feat_dim),
+            )
+
+    @property
+    def alpha(self) -> torch.Tensor:
+        """获取约束后的 α 值"""
+        return torch.sigmoid(self._alpha)
+
+    def attention_pooling(
+        self,
+        tokens: torch.Tensor,  # (B, K+1, C)
+        query: nn.Parameter,   # (1, 1, C)
+    ) -> torch.Tensor:
+        """
+        Attention Pooling: 用可学习 query 从 tokens 中聚合信息
+
+        Returns:
+            pooled: (B, C) 池化后的全局特征
+        """
+        B = tokens.shape[0]
+        query_expanded = query.expand(B, -1, -1)  # (B, 1, C)
+
+        # Cross-attention: query attends to tokens
+        pooled, _ = self.attn_pool(query_expanded, tokens, tokens)  # (B, 1, C)
+        pooled = self.attn_norm(pooled.squeeze(1))  # (B, C)
+
+        return pooled
+
+    def compute_entropy(self, feat: torch.Tensor) -> torch.Tensor:
+        """计算特征的信息熵"""
+        feat_abs = torch.abs(feat) + 1e-8
+        prob = feat_abs / feat_abs.sum(dim=-1, keepdim=True)
+        entropy = -torch.sum(prob * torch.log(prob + 1e-8), dim=-1)
+        return entropy
+
+    def forward(
+        self,
+        rgb_tokens: torch.Tensor,   # (B, K+1, C) - SDTPS 输出
+        nir_tokens: torch.Tensor,   # (B, K+1, C)
+        tir_tokens: torch.Tensor,   # (B, K+1, C)
+    ) -> torch.Tensor:
+        """
+        双门控自适应融合（直接处理 SDTPS 输出）
+
+        Args:
+            rgb_tokens: RGB SDTPS 输出 (B, K+1, C)
+            nir_tokens: NIR SDTPS 输出 (B, K+1, C)
+            tir_tokens: TIR SDTPS 输出 (B, K+1, C)
+
+        Returns:
+            fused_feat: (B, output_dim) - 融合后的特征
+        """
+        # ========== 1. Attention Pooling ==========
+        # 用可学习 query 从 tokens 中聚合信息（替代 mean）
+        h_rgb = self.attention_pooling(rgb_tokens, self.rgb_query)  # (B, C)
+        h_nir = self.attention_pooling(nir_tokens, self.nir_query)  # (B, C)
+        h_tir = self.attention_pooling(tir_tokens, self.tir_query)  # (B, C)
+
+        # ========== 2. 信息熵门控 (IEG) ==========
+        H_rgb = self.compute_entropy(h_rgb)
+        H_nir = self.compute_entropy(h_nir)
+        H_tir = self.compute_entropy(h_tir)
+
+        z_rgb = self.entropy_proj(h_rgb).mean(dim=-1)
+        z_nir = self.entropy_proj(h_nir).mean(dim=-1)
+        z_tir = self.entropy_proj(h_tir).mean(dim=-1)
+
+        score_rgb = z_rgb * torch.exp(-H_rgb / self.tau)
+        score_nir = z_nir * torch.exp(-H_nir / self.tau)
+        score_tir = z_tir * torch.exp(-H_tir / self.tau)
+
+        scores = torch.stack([score_rgb, score_nir, score_tir], dim=-1)
+        entropy_weights = F.softmax(scores, dim=-1)
+
+        h_entropy = (
+            entropy_weights[:, 0:1] * h_rgb +
+            entropy_weights[:, 1:2] * h_nir +
+            entropy_weights[:, 2:3] * h_tir
+        )
+
+        # ========== 3. 模态重要性门控 (MIG) ==========
+        h_concat = torch.cat([h_rgb, h_nir, h_tir], dim=-1)
+        gates = self.gate_net(h_concat)
+
+        h_rgb_gated = gates[:, 0:1] * h_rgb
+        h_nir_gated = gates[:, 1:2] * h_nir
+        h_tir_gated = gates[:, 2:3] * h_tir
+
+        h_importance = h_rgb_gated + h_nir_gated + h_tir_gated
+
+        # ========== 4. 自适应融合 ==========
+        alpha = self.alpha
+        h_fused = alpha * h_entropy + (1 - alpha) * h_importance
+
+        # ========== 5. 输出 ==========
+        if self.output_dim == self.feat_dim:
+            return self.output_proj(h_fused)
+        else:
+            h_enhance = self.modal_enhance(h_fused)
+            h_rgb_out = h_rgb + h_enhance
+            h_nir_out = h_nir + h_enhance
+            h_tir_out = h_tir + h_enhance
+            return torch.cat([h_rgb_out, h_nir_out, h_tir_out], dim=-1)
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("测试 Dual-Gated Adaptive Fusion 模块")
