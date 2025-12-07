@@ -22,6 +22,11 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = True
 
+    # 禁用 TF32 以确保数值精度一致性
+    # A100 默认启用 TF32，会降低精度（23位尾数→10位），导致与 3090 结果不同
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+
 
 if __name__ == '__main__':
 
