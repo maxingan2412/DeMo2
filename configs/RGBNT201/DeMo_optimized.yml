@@ -1,0 +1,102 @@
+# ============================================================================
+# DeMo 优化配置 - 基于消融实验结果
+# 目标：在 RGBNT201 上实现更高性能
+# ============================================================================
+# 实验设计依据：
+#   1. SDTPS only 达到 76.0% mAP, 80.1% Rank-1 (最佳单模块)
+#   2. SDTPS_LOSS=1.0 达到 76.6% mAP (最佳参数)
+#   3. SDTPS_SPARSE=0.8 达到 75.8% mAP, 79.4% Rank-1
+#   4. LIF 与 SDTPS 存在冲突，不使用
+#   5. SACR 增加参数但收益有限，不使用
+#
+# 优化策略：
+#   - 仅使用 SDTPS 模块
+#   - SDTPS_LOSS_WEIGHT: 1.0 (实验最优)
+#   - SDTPS_SPARSE_RATIO: 0.75 (介于 0.7 和 0.8 之间，寻找更优点)
+#   - SDTPS_BETA: 0.3 (略增加跨模态注意力权重)
+#   - 适当增加训练轮数以充分收敛
+# ============================================================================
+
+MODEL:
+  TRANSFORMER_TYPE: 'ViT-B-16'
+  STRIDE_SIZE: [ 16, 16 ]
+  SIE_CAMERA: True
+  DIRECT: 1
+  SIE_COE: 1.0
+  ID_LOSS_WEIGHT: 0.25
+  TRIPLET_LOSS_WEIGHT: 1.0
+  GLOBAL_LOCAL: True
+
+  # 禁用 HDM/ATM (使用新模块替代)
+  HDM: False
+  ATM: False
+
+  # ========== 模块开关 ==========
+  # 根据消融实验：SDTPS only 效果最佳
+  USE_SACR: False                    # 禁用 SACR (参数多但收益有限)
+  USE_SDTPS: True                    # 启用 SDTPS (核心模块)
+  USE_LIF: False                     # 禁用 LIF (与 SDTPS 冲突)
+
+  # ========== SDTPS 优化参数 ==========
+  SDTPS_SPARSE_RATIO: 0.75           # 保留 75% tokens (介于 0.7-0.8 之间)
+  SDTPS_AGGR_RATIO: 0.5              # 聚合比例 (保持默认)
+  SDTPS_BETA: 0.3                    # 跨模态注意力权重 (从 0.25 提升)
+  SDTPS_USE_GUMBEL: False            # 禁用 Gumbel (数值不稳定)
+  SDTPS_GUMBEL_TAU: 5.0              # Gumbel 温度 (未使用)
+  SDTPS_LOSS_WEIGHT: 1.0             # SDTPS 损失权重 (实验最优！)
+
+  # SACR 参数 (已禁用，保留默认值)
+  SACR_DILATION_RATES: [2, 3, 4]
+
+  # LIF 参数 (已禁用，保留默认值)
+  LIF_BETA: 0.4
+  LIF_LOSS_WEIGHT: 0.2
+  LIF_LAYER: 3
+
+  HEAD: 4
+
+INPUT:
+  SIZE_TRAIN: [ 256, 128 ]
+  SIZE_TEST: [ 256, 128 ]
+  PROB: 0.5                          # 随机水平翻转概率
+  RE_PROB: 0.5                       # 随机擦除概率
+  PADDING: 10
+
+DATALOADER:
+  SAMPLER: 'softmax_triplet'
+  NUM_INSTANCE: 8
+  NUM_WORKERS: 14
+
+DATASETS:
+  NAMES: ('RGBNT201')
+  ROOT_DIR: '..'
+
+SOLVER:
+  BASE_LR: 0.00035                   # 基础学习率 (保持默认)
+  WARMUP_ITERS: 10
+  MAX_EPOCHS: 60                     # 增加训练轮数 (50→60)
+  OPTIMIZER_NAME: 'Adam'
+  IMS_PER_BATCH: 64
+  EVAL_PERIOD: 1
+
+TEST:
+  IMS_PER_BATCH: 128
+  RE_RANKING: 'no'
+  WEIGHT: ''
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+  MISS: "nothing"
+
+OUTPUT_DIR: '..'
+
+# ============================================================================
+# 预期结果：
+#   - mAP: 77%+ (基于 SDTPS only 76.0% + SDTPS_LOSS=1.0 提升)
+#   - Rank-1: 80%+ (基于 SDTPS only 80.1%)
+#   - 参数量: ~88.6M (与 SDTPS only 相同)
+#   - GFLOPs: ~34.3 (与 SDTPS only 相同)
+#
+# 运行命令：
+#   python train_net.py --config_file configs/RGBNT201/DeMo_optimized.yml \
+#       --exp_name "optimized_sdtps"
+# ============================================================================
