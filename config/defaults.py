@@ -49,6 +49,11 @@ _C.MODEL.USE_LIF = False # whether to use Trimodal-LIF for quality-aware fusion
 _C.MODEL.LIF_BETA = 0.4 # fusion weight temperature for LIF
 _C.MODEL.LIF_LOSS_WEIGHT = 0.1 # LIF loss weight (auxiliary loss)
 _C.MODEL.LIF_LAYER = 3 # which layer to apply LIF (3, 4, or 5)
+# DGAF: Dual-Gated Adaptive Fusion (AGFN paper)
+# 用于 SDTPS 输出的自适应融合，替代简单的 concat
+_C.MODEL.USE_DGAF = False # whether to use Dual-Gated Adaptive Fusion after SDTPS
+_C.MODEL.DGAF_TAU = 1.0 # temperature for entropy gate (lower = sharper)
+_C.MODEL.DGAF_INIT_ALPHA = 0.5 # initial value for alpha (balance IEG and MIG)
 # If train with label smooth, options: 'on', 'off'
 _C.MODEL.IF_LABELSMOOTH = 'on'
 # If train with the contact feature

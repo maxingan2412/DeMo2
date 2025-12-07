@@ -11,6 +11,7 @@ from modeling.moe.AttnMOE import GeneralFusion, QuickGELU
 from modeling.sdtps_complete import MultiModalSDTPS
 from modeling.sacr import SACR
 from modeling.trimodal_lif import TrimodalLIF, TrimodalLIFLoss
+from modeling.dual_gated_fusion import DualGatedAdaptiveFusion, DualGatedAdaptiveFusionV2, DualGatedPostFusion
 import torch
 
 
@@ -40,6 +41,7 @@ class DeMo(nn.Module):
         self.GLOBAL_LOCAL = cfg.MODEL.GLOBAL_LOCAL
         self.head = cfg.MODEL.HEAD
         self.USE_LIF = cfg.MODEL.USE_LIF
+        self.USE_DGAF = cfg.MODEL.USE_DGAF
         if self.GLOBAL_LOCAL:
             self.pool = nn.AdaptiveAvgPool1d(1)
             self.rgb_reduce = nn.Sequential(nn.LayerNorm(2 * self.feat_dim),
@@ -74,6 +76,16 @@ class DeMo(nn.Module):
             # 较高温度（如10）会使权重更尖锐（近乎 one-hot）
             # 较低温度（如1-3）会使权重更平滑（软融合）
             self.lif_temperature = cfg.MODEL.LIF_BETA * 10.0  # 默认：0.4 * 10 = 4.0
+
+        # DGAF: Dual-Gated Adaptive Fusion (基于 AGFN 论文)
+        # 用于 SDTPS 输出的自适应融合，替代简单的 concat
+        if self.USE_DGAF:
+            self.dgaf = DualGatedPostFusion(
+                feat_dim=self.feat_dim,
+                output_dim=3 * self.feat_dim,  # 保持与原 concat 输出一致
+                tau=cfg.MODEL.DGAF_TAU,
+                init_alpha=cfg.MODEL.DGAF_INIT_ALPHA,
+            )
 
         if self.HDM or self.ATM:
             self.generalFusion = GeneralFusion(feat_dim=self.feat_dim, num_experts=7, head=self.head, reg_weight=0,
@@ -229,8 +241,14 @@ class DeMo(nn.Module):
                 NI_sdtps = NI_enhanced.mean(dim=1)    # (B, K+1, C) → (B, C)
                 TI_sdtps = TI_enhanced.mean(dim=1)    # (B, K+1, C) → (B, C)
 
-                # 拼接三个模态的增强特征
-                sdtps_feat = torch.cat([RGB_sdtps, NI_sdtps, TI_sdtps], dim=-1)  # (B, 3C)
+                # DGAF: 使用双门控自适应融合替代简单 concat
+                if self.USE_DGAF:
+                    # 信息熵门控 + 模态重要性门控 → 自适应融合
+                    sdtps_feat = self.dgaf(RGB_sdtps, NI_sdtps, TI_sdtps)  # (B, 3C)
+                else:
+                    # 原始方式：简单拼接
+                    sdtps_feat = torch.cat([RGB_sdtps, NI_sdtps, TI_sdtps], dim=-1)  # (B, 3C)
+
                 sdtps_score = self.classifier_sdtps(self.bottleneck_sdtps(sdtps_feat))
 
             if self.HDM or self.ATM:
@@ -361,7 +379,12 @@ class DeMo(nn.Module):
                 RGB_sdtps = RGB_enhanced.mean(dim=1)
                 NI_sdtps = NI_enhanced.mean(dim=1)
                 TI_sdtps = TI_enhanced.mean(dim=1)
-                sdtps_feat = torch.cat([RGB_sdtps, NI_sdtps, TI_sdtps], dim=-1)
+
+                # DGAF: 使用双门控自适应融合替代简单 concat
+                if self.USE_DGAF:
+                    sdtps_feat = self.dgaf(RGB_sdtps, NI_sdtps, TI_sdtps)
+                else:
+                    sdtps_feat = torch.cat([RGB_sdtps, NI_sdtps, TI_sdtps], dim=-1)
 
                 if return_pattern == 1:
                     return ori
