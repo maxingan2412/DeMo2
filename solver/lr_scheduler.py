@@ -54,3 +54,20 @@ class WarmupMultiStepLR(torch.optim.lr_scheduler._LRScheduler):
             * self.gamma ** bisect_right(self.milestones, self.last_epoch)
             for base_lr in self.base_lrs
         ]
+
+    def _get_lr(self, epoch):
+        """兼容 CosineLRScheduler 的接口，用于 processor.py 日志输出"""
+        # 计算指定 epoch 的学习率
+        warmup_factor = 1
+        if epoch < self.warmup_iters:
+            if self.warmup_method == "constant":
+                warmup_factor = self.warmup_factor
+            elif self.warmup_method == "linear":
+                alpha = epoch / self.warmup_iters
+                warmup_factor = self.warmup_factor * (1 - alpha) + alpha
+        return [
+            base_lr
+            * warmup_factor
+            * self.gamma ** bisect_right(self.milestones, epoch)
+            for base_lr in self.base_lrs
+        ]
