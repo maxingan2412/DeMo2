@@ -454,7 +454,10 @@ class MultiModalSDTPS(nn.Module):
         global_feat: torch.Tensor,   # (B, C)
     ) -> torch.Tensor:
         """
-        计算自注意力 s^{im} - 余弦相似度版本
+        计算自注意力 s^{im} - 余弦相似度版本（无可学习参数）
+
+        cosine_sim(a, b) = (a · b) / (||a|| * ||b||)
+        由于先做 L2 归一化，||a|| = ||b|| = 1，所以点积 = 余弦相似度
 
         注意：移除了 no_grad 以允许 Backbone finetune
         原 SEPS 论文使用 no_grad 因为 Backbone 冻结
@@ -463,12 +466,11 @@ class MultiModalSDTPS(nn.Module):
         if global_feat.dim() == 2:
             global_feat = global_feat.unsqueeze(1)
 
-        # 移除 no_grad 以允许梯度传播到 Backbone
-        # L2归一化
-        patches_norm = F.normalize(patches, dim=-1)
-        global_norm = F.normalize(global_feat, dim=-1)
+        # L2 归一化后，点积 = 余弦相似度
+        patches_norm = F.normalize(patches, dim=-1)  # ||patches_norm|| = 1
+        global_norm = F.normalize(global_feat, dim=-1)  # ||global_norm|| = 1
 
-        # 点积相似度
+        # 归一化向量的点积 = 余弦相似度
         self_attn = (patches_norm * global_norm).sum(dim=-1)
 
         return self_attn  # (B, N)
@@ -479,7 +481,10 @@ class MultiModalSDTPS(nn.Module):
         cross_global: torch.Tensor,  # (B, C)
     ) -> torch.Tensor:
         """
-        计算交叉注意力 s^{st} / s^{dt} - 余弦相似度版本
+        计算交叉注意力 s^{cross} - 余弦相似度版本（无可学习参数）
+
+        cosine_sim(a, b) = (a · b) / (||a|| * ||b||)
+        由于先做 L2 归一化，||a|| = ||b|| = 1，所以点积 = 余弦相似度
 
         注意：移除了 no_grad 以允许跨模态学习
         允许梯度在不同模态之间传播，实现跨模态引导的特征学习
@@ -487,9 +492,11 @@ class MultiModalSDTPS(nn.Module):
         if cross_global.dim() == 2:
             cross_global = cross_global.unsqueeze(1)
 
-        # 移除 no_grad 以允许跨模态梯度传播
-        patches_norm = F.normalize(patches, dim=-1)
-        cross_norm = F.normalize(cross_global, dim=-1)
+        # L2 归一化后，点积 = 余弦相似度
+        patches_norm = F.normalize(patches, dim=-1)  # ||patches_norm|| = 1
+        cross_norm = F.normalize(cross_global, dim=-1)  # ||cross_norm|| = 1
+
+        # 归一化向量的点积 = 余弦相似度
         cross_attn = (patches_norm * cross_norm).sum(dim=-1)
 
         return cross_attn  # (B, N)
