@@ -9,19 +9,7 @@ def make_optimizer(cfg, model, center_criterion):
         lr = cfg.SOLVER.BASE_LR
         weight_decay = cfg.SOLVER.WEIGHT_DECAY
         if "bias" in key:
-            lr = cfg.SOLVER.BASE_LR * cfg.SOLVER.BIAS_LR_FACTOR
             weight_decay = cfg.SOLVER.WEIGHT_DECAY_BIAS
-
-        if cfg.MODEL.TRANSFORMER_TYPE == 'ViT-B-16':  # this setting is for the CLIP pre-trained models
-            if not cfg.MODEL.FROZEN:
-                if "base" in key:
-                    if "adapter" not in key: # this setting is from MambaPro, where we use to fine-tune the CLIP visual backbone
-                        lr = 0.000005
-        else:
-            if not cfg.MODEL.FROZEN: # this setting is for the ImageNet pre-trained models
-                if "base" in key:
-                    if "adapter" not in key:
-                        lr = cfg.SOLVER.BASE_LR*0.8
 
         if cfg.SOLVER.LARGE_FC_LR:
             if "classifier" in key or "arcface" in key:

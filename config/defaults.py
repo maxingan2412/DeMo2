@@ -133,7 +133,6 @@ _C.SOLVER.MAX_EPOCHS = 120
 _C.SOLVER.BASE_LR = 0.009
 # Factor of learning bias
 _C.SOLVER.LARGE_FC_LR = False
-_C.SOLVER.BIAS_LR_FACTOR = 2
 # Momentum
 _C.SOLVER.MOMENTUM = 0.9
 # Margin of triplet loss
@@ -168,7 +167,7 @@ _C.SOLVER.LR_SCHEDULER = 'cosine'
 
 _C.SOLVER.COSINE_MARGIN = 0.5
 _C.SOLVER.COSINE_SCALE = 30
-_C.SOLVER.SEED = 1111
+#_C.SOLVER.SEED = 1234
 _C.MODEL.NO_MARGIN = True
 # epoch number of saving checkpoints
 _C.SOLVER.CHECKPOINT_PERIOD = 10
