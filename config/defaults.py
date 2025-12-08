@@ -44,6 +44,8 @@ _C.MODEL.SDTPS_BETA = 0.25 # score combination weight parameter
 _C.MODEL.SDTPS_USE_GUMBEL = False # whether to use Gumbel-Softmax
 _C.MODEL.SDTPS_GUMBEL_TAU = 1.0 # Gumbel temperature
 _C.MODEL.SDTPS_LOSS_WEIGHT = 2.0 # loss weight for SDTPS branch (vs ori=1.0)
+_C.MODEL.SDTPS_CROSS_ATTN_TYPE = 'cosine' # 'cosine' (原始余弦相似度) or 'attention' (真正的Cross-Attention)
+_C.MODEL.SDTPS_CROSS_ATTN_HEADS = 4 # number of heads for Cross-Attention (when type='attention')
 # Trimodal-LIF: Quality-aware multi-modal fusion (M2D-LIF framework)
 _C.MODEL.USE_LIF = False # whether to use Trimodal-LIF for quality-aware fusion
 _C.MODEL.LIF_BETA = 0.4 # fusion weight temperature for LIF

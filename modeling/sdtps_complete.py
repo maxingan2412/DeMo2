@@ -7,6 +7,8 @@ SDTPS: Sparse and Dense Token-Aware Patch Selection - 完整修复版
 3. 开源代码: seps(copy)/lib/cross_net.py
 
 改动：将原始的"图像-文本"对齐改为"RGB-NIR-TIR"多模态对齐
+
+v2 更新: 支持真正的 Cross-Attention 替代简单余弦相似度
 """
 
 import math
@@ -14,6 +16,106 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple
+
+
+class CrossModalAttention(nn.Module):
+    """
+    真正的 Cross-Attention 模块
+
+    与简单余弦相似度的区别：
+    - 余弦相似度：直接计算 patches 和 global 的相似度，无可学习参数
+    - Cross-Attention：通过 Q, K, V 投影学习"用什么视角去看 patch"
+
+    计算流程：
+    Q = W_q @ patches     # (B, N, C) -> (B, N, C)
+    K = W_k @ global      # (B, 1, C) -> (B, 1, C)
+    V = W_v @ global      # (B, 1, C) -> (B, 1, C)
+
+    Attention = softmax(Q @ K^T / sqrt(d))  # (B, N, 1)
+    Output = Attention @ V                   # (B, N, C)
+
+    但我们只需要 attention score 作为重要性分数，不需要 output
+    所以简化为：score = mean(Q @ K^T / sqrt(d), dim=-1)  # (B, N)
+    """
+
+    def __init__(
+        self,
+        embed_dim: int = 512,
+        num_heads: int = 4,
+        qkv_bias: bool = True,
+        attn_drop: float = 0.0,
+    ):
+        super().__init__()
+
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        # Q, K 投影（我们只需要 attention score，不需要 V）
+        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=qkv_bias)
+        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=qkv_bias)
+
+        self.attn_drop = nn.Dropout(attn_drop)
+
+        # 输出投影：将多头得分合并为单一得分
+        self.score_proj = nn.Linear(num_heads, 1, bias=False)
+
+        self._init_weights()
+
+    def _init_weights(self):
+        """初始化权重"""
+        nn.init.xavier_uniform_(self.q_proj.weight)
+        nn.init.xavier_uniform_(self.k_proj.weight)
+        # score_proj 初始化为均匀权重
+        nn.init.constant_(self.score_proj.weight, 1.0 / self.num_heads)
+        if self.q_proj.bias is not None:
+            nn.init.zeros_(self.q_proj.bias)
+        if self.k_proj.bias is not None:
+            nn.init.zeros_(self.k_proj.bias)
+
+    def forward(
+        self,
+        patches: torch.Tensor,       # (B, N, C) - 查询
+        global_feat: torch.Tensor,   # (B, C) or (B, 1, C) - 键
+    ) -> torch.Tensor:
+        """
+        计算 Cross-Attention score
+
+        Args:
+            patches: (B, N, C) - patch tokens 作为 Query
+            global_feat: (B, C) or (B, 1, C) - global feature 作为 Key
+
+        Returns:
+            score: (B, N) - 每个 patch 的重要性得分
+        """
+        B, N, C = patches.shape
+
+        if global_feat.dim() == 2:
+            global_feat = global_feat.unsqueeze(1)  # (B, C) -> (B, 1, C)
+
+        # Q 投影: patches 作为查询
+        q = self.q_proj(patches)  # (B, N, C)
+        q = q.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        # (B, num_heads, N, head_dim)
+
+        # K 投影: global 作为键
+        k = self.k_proj(global_feat)  # (B, 1, C)
+        k = k.reshape(B, 1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        # (B, num_heads, 1, head_dim)
+
+        # Attention score: Q @ K^T / sqrt(d)
+        attn = (q @ k.transpose(-2, -1)) * self.scale  # (B, num_heads, N, 1)
+        attn = attn.squeeze(-1)  # (B, num_heads, N)
+
+        # 可选：应用 dropout（训练时）
+        attn = self.attn_drop(attn)
+
+        # 合并多头得分为单一得分
+        attn = attn.permute(0, 2, 1)  # (B, N, num_heads)
+        score = self.score_proj(attn).squeeze(-1)  # (B, N)
+
+        return score
 
 
 class TokenSparse(nn.Module):
@@ -247,6 +349,10 @@ class MultiModalSDTPS(nn.Module):
 
     原论文: 196 → 98 → 39 (比例0.199)
     我们: 128 → 64 → 26 (比例0.203)
+
+    v2 更新: 支持两种 Cross-Attention 类型
+    - 'cosine': 原始余弦相似度（无可学习参数）
+    - 'attention': 真正的多头 Cross-Attention（有可学习参数）
     """
 
     def __init__(
@@ -259,6 +365,8 @@ class MultiModalSDTPS(nn.Module):
         gumbel_tau: float = 1.0,
         beta: float = 0.25,
         dim_ratio: float = 0.2,      # aggregation MLP的隐藏层比例
+        cross_attn_type: str = 'cosine',  # 'cosine' or 'attention'
+        cross_attn_heads: int = 4,   # Cross-Attention 的头数
     ):
         super().__init__()
 
@@ -267,6 +375,7 @@ class MultiModalSDTPS(nn.Module):
         self.sparse_ratio = sparse_ratio
         self.aggr_ratio = aggr_ratio
         self.beta = beta
+        self.cross_attn_type = cross_attn_type
 
         # 计算聚合后的patch数量 N_c
         self.keeped_patches = int(num_patches * aggr_ratio * sparse_ratio)
@@ -277,6 +386,26 @@ class MultiModalSDTPS(nn.Module):
         print(f"  sparse_ratio: {sparse_ratio} → 选中 {math.ceil(num_patches * sparse_ratio)} patches")
         print(f"  aggr_ratio: {aggr_ratio} → 聚合到 {self.keeped_patches} patches")
         print(f"  最终比例: {self.keeped_patches / num_patches:.3f}")
+        print(f"  cross_attn_type: {cross_attn_type}")
+        if cross_attn_type == 'attention':
+            print(f"  cross_attn_heads: {cross_attn_heads}")
+
+        # ========== Cross-Attention 模块（如果使用 'attention' 类型） ==========
+        if cross_attn_type == 'attention':
+            # RGB 模态的 cross-attention
+            self.rgb_cross_nir = CrossModalAttention(embed_dim, cross_attn_heads)
+            self.rgb_cross_tir = CrossModalAttention(embed_dim, cross_attn_heads)
+            self.rgb_self_attn = CrossModalAttention(embed_dim, cross_attn_heads)
+
+            # NIR 模态的 cross-attention
+            self.nir_cross_rgb = CrossModalAttention(embed_dim, cross_attn_heads)
+            self.nir_cross_tir = CrossModalAttention(embed_dim, cross_attn_heads)
+            self.nir_self_attn = CrossModalAttention(embed_dim, cross_attn_heads)
+
+            # TIR 模态的 cross-attention
+            self.tir_cross_rgb = CrossModalAttention(embed_dim, cross_attn_heads)
+            self.tir_cross_nir = CrossModalAttention(embed_dim, cross_attn_heads)
+            self.tir_self_attn = CrossModalAttention(embed_dim, cross_attn_heads)
 
         # ========== RGB 模态 ==========
         # Stage 1: TokenSparse
@@ -319,13 +448,13 @@ class MultiModalSDTPS(nn.Module):
             dim_ratio=dim_ratio,
         )
 
-    def _compute_self_attention(
+    def _compute_self_attention_cosine(
         self,
         patches: torch.Tensor,       # (B, N, C)
         global_feat: torch.Tensor,   # (B, C)
     ) -> torch.Tensor:
         """
-        计算自注意力 s^{im}
+        计算自注意力 s^{im} - 余弦相似度版本
 
         注意：移除了 no_grad 以允许 Backbone finetune
         原 SEPS 论文使用 no_grad 因为 Backbone 冻结
@@ -344,13 +473,13 @@ class MultiModalSDTPS(nn.Module):
 
         return self_attn  # (B, N)
 
-    def _compute_cross_attention(
+    def _compute_cross_attention_cosine(
         self,
         patches: torch.Tensor,       # (B, N, C)
         cross_global: torch.Tensor,  # (B, C)
     ) -> torch.Tensor:
         """
-        计算交叉注意力 s^{st} / s^{dt}
+        计算交叉注意力 s^{st} / s^{dt} - 余弦相似度版本
 
         注意：移除了 no_grad 以允许跨模态学习
         允许梯度在不同模态之间传播，实现跨模态引导的特征学习
@@ -389,9 +518,16 @@ class MultiModalSDTPS(nn.Module):
 
         # ==================== RGB 模态 ====================
         # Step 1: 计算attention scores
-        rgb_self_attn = self._compute_self_attention(RGB_cash, RGB_global)
-        rgb_nir_cross = self._compute_cross_attention(RGB_cash, NI_global)
-        rgb_tir_cross = self._compute_cross_attention(RGB_cash, TI_global)
+        if self.cross_attn_type == 'attention':
+            # 使用真正的 Cross-Attention
+            rgb_self_attn = self.rgb_self_attn(RGB_cash, RGB_global)
+            rgb_nir_cross = self.rgb_cross_nir(RGB_cash, NI_global)
+            rgb_tir_cross = self.rgb_cross_tir(RGB_cash, TI_global)
+        else:
+            # 使用余弦相似度
+            rgb_self_attn = self._compute_self_attention_cosine(RGB_cash, RGB_global)
+            rgb_nir_cross = self._compute_cross_attention_cosine(RGB_cash, NI_global)
+            rgb_tir_cross = self._compute_cross_attention_cosine(RGB_cash, TI_global)
 
         # Step 2: TokenSparse - 选择显著patches
         rgb_select, rgb_extra, rgb_mask, rgb_importance, rgb_indices = self.rgb_sparse(
@@ -412,9 +548,14 @@ class MultiModalSDTPS(nn.Module):
         RGB_enhanced = torch.cat([rgb_aggr, rgb_extra], dim=1)  # (B, N_c+1, C)
 
         # ==================== NIR 模态 ====================
-        nir_self_attn = self._compute_self_attention(NI_cash, NI_global)
-        nir_rgb_cross = self._compute_cross_attention(NI_cash, RGB_global)
-        nir_tir_cross = self._compute_cross_attention(NI_cash, TI_global)
+        if self.cross_attn_type == 'attention':
+            nir_self_attn = self.nir_self_attn(NI_cash, NI_global)
+            nir_rgb_cross = self.nir_cross_rgb(NI_cash, RGB_global)
+            nir_tir_cross = self.nir_cross_tir(NI_cash, TI_global)
+        else:
+            nir_self_attn = self._compute_self_attention_cosine(NI_cash, NI_global)
+            nir_rgb_cross = self._compute_cross_attention_cosine(NI_cash, RGB_global)
+            nir_tir_cross = self._compute_cross_attention_cosine(NI_cash, TI_global)
 
         nir_select, nir_extra, nir_mask, nir_importance, nir_indices = self.nir_sparse(
             tokens=NI_cash,
@@ -431,9 +572,14 @@ class MultiModalSDTPS(nn.Module):
         NI_enhanced = torch.cat([nir_aggr, nir_extra], dim=1)  # (B, N_c+1, C)
 
         # ==================== TIR 模态 ====================
-        tir_self_attn = self._compute_self_attention(TI_cash, TI_global)
-        tir_rgb_cross = self._compute_cross_attention(TI_cash, RGB_global)
-        tir_nir_cross = self._compute_cross_attention(TI_cash, NI_global)
+        if self.cross_attn_type == 'attention':
+            tir_self_attn = self.tir_self_attn(TI_cash, TI_global)
+            tir_rgb_cross = self.tir_cross_rgb(TI_cash, RGB_global)
+            tir_nir_cross = self.tir_cross_nir(TI_cash, NI_global)
+        else:
+            tir_self_attn = self._compute_self_attention_cosine(TI_cash, TI_global)
+            tir_rgb_cross = self._compute_cross_attention_cosine(TI_cash, RGB_global)
+            tir_nir_cross = self._compute_cross_attention_cosine(TI_cash, NI_global)
 
         tir_select, tir_extra, tir_mask, tir_importance, tir_indices = self.tir_sparse(
             tokens=TI_cash,

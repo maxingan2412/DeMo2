@@ -148,6 +148,8 @@ class DeMo(nn.Module):
                 use_gumbel=cfg.MODEL.SDTPS_USE_GUMBEL,
                 gumbel_tau=cfg.MODEL.SDTPS_GUMBEL_TAU,
                 beta=cfg.MODEL.SDTPS_BETA,
+                cross_attn_type=cfg.MODEL.SDTPS_CROSS_ATTN_TYPE,
+                cross_attn_heads=cfg.MODEL.SDTPS_CROSS_ATTN_HEADS,
             )
             # SDTPS 输出特征维度：每个模态 (K+1) 个 token，K 取决于 sparse_ratio
             # 暂时使用3倍 feat_dim（拼接三个模态的全局特征）
