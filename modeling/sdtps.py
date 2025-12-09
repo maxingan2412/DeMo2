@@ -63,8 +63,10 @@ class CrossModalAttention(nn.Module):
         num_heads: int = 4,
         qkv_bias: bool = True,
         attn_drop: float = 0.0,
-        use_gate_norm: bool = False,  # 是否在 gate 前使用 LayerNorm
-        renormalize_attn: bool = False,  # 是否在门控后重新归一化注意力
+        use_gate_norm: bool = False,
+        renormalize_attn: bool = False,
+        cosine_bias_alpha: float = 1.0,  # Cosine bias 强度
+        attn_temperature: float = 1.0,   # Attention 温度
     ):
         super().__init__()
 
@@ -80,19 +82,11 @@ class CrossModalAttention(nn.Module):
 
         self.attn_drop = nn.Dropout(attn_drop)
 
-        # ========== 反向设计：移除 gate 参数，直接用 attention 加权 cosine ==========
-        # 旧版（需要 gate_linear/gate_scale/gate_bias）：
-        # self.gate_linear = nn.Linear(1, num_heads, bias=True)
-        # 或：self.gate_scale/gate_bias = nn.Parameter(...)
-
-        # 新版（反向设计，无需额外参数）：
-        # 直接用 attention 对 cosine 加权，零参数开销
-        # score = (attn * cosine).mean(dim=1)
-
-        # 可选：LayerNorm（如果需要的话，当前不使用）
-        # self.use_gate_norm = use_gate_norm
-        # if use_gate_norm:
-        #     self.gate_norm = nn.LayerNorm(num_heads)
+        # ========== 专家建议1+2：Cosine bias + Temperature ==========
+        # 可学习的 cosine bias 强度（避免"一票否决"）
+        self.alpha = nn.Parameter(torch.tensor(cosine_bias_alpha))
+        # 可学习的 attention 温度（控制峰值）
+        self.temperature = nn.Parameter(torch.tensor(attn_temperature))
 
         self._init_weights()
 
@@ -105,9 +99,9 @@ class CrossModalAttention(nn.Module):
         if self.k_proj.bias is not None:
             nn.init.zeros_(self.k_proj.bias)
 
-        # ========== 反向设计：无需 gate 参数，因此无需初始化 ==========
-        # 旧版需要初始化 gate_linear 或 gate_scale/bias
-        # 新版：直接用 attention 加权，无额外参数
+        # ========== 专家建议：参数初始化 ==========
+        # alpha 和 temperature 通过 __init__ 参数传入，已在定义时设置
+        # 无需额外初始化
 
     def forward(
         self,
@@ -142,85 +136,101 @@ class CrossModalAttention(nn.Module):
         k = k.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         # (B, num_heads, N, head_dim)
 
-        # ========== Step 2: Attention Score ==========
+        # ========== Step 2: Attention Score + Cosine Bias ==========
+        # ========== 专家建议1：Cosine 作为 bias 加到 logits（加法而非乘法）==========
         # Q @ K^T / sqrt(d)
-        # q: (B, num_heads, 1, head_dim) @ k^T: (B, num_heads, head_dim, N)
-        # = (B, num_heads, 1, N)
-        attn = (q @ k.transpose(-2, -1)) * self.scale  # (B, num_heads, 1, N)
+        attn_logits = (q @ k.transpose(-2, -1)) * self.scale  # (B, num_heads, 1, N)
+        attn_logits = attn_logits.squeeze(2)  # (B, num_heads, N)
 
-        # 在 N（patch）维度做 softmax
-        attn = attn.softmax(dim=-1)  # (B, num_heads, 1, N)
-        attn = attn.squeeze(2)  # (B, num_heads, N)
+        # 加入 cosine bias（推一把，而非"一票否决"）
+        # alpha: 可学习的 bias 强度，避免固定先验完全限制 attention
+        cosine_bias = self.alpha * cosine_sim.unsqueeze(1)  # (B, 1, N)
+        attn_logits = attn_logits + cosine_bias  # (B, num_heads, N)
+
+        # ========== 专家建议2：温度控制（避免过于尖锐）==========
+        # 在 N（patch）维度做 softmax，加温度控制
+        attn = (attn_logits / self.temperature).softmax(dim=-1)  # (B, num_heads, N)
+        # temperature < 1: 更尖锐（集中）
+        # temperature > 1: 更平滑（分散）
+        # 专家建议：0.7~1.0，避免太尖导致不稳定
 
         # 可选：应用 dropout（训练时）
         attn = self.attn_drop(attn)
 
-        # ========== 反向设计：用 attention 调整 cosine（而非 cosine 门控 attention）==========
-        # 旧版（用固定 cosine 限制可学习 attention，表达力受限）：
-        # cosine_for_gate = cosine_sim.unsqueeze(-1)  # (B, N, 1)
-        # gate = sigmoid(self.gate_linear(cosine_for_gate))  # 固定先验
-        # attn_gated = attn * gate.transpose(1, 2)  # 被固定先验限制
-        # score = normalize(attn_gated).mean(dim=1)
-
-        # 新版（反向：用可学习 attention 调整固定 cosine，更灵活）：
-        # 思路：cosine 提供稳定语义基础，attention 学习自适应权重
-        cosine_expanded = cosine_sim.unsqueeze(1)  # (B, 1, N)
-        # Attention 对 cosine 做逐 head 加权
-        weighted_cosine = attn * cosine_expanded  # (B, num_heads, N)
-        # 多头平均
-        score = weighted_cosine.mean(dim=1)  # (B, N)
-
-        # 优势：
-        # 1. Cosine 作为稳定的主体信号（不会乱飘）
-        # 2. Attention 学习如何动态调整权重（自适应）
-        # 3. 不限制 attention 的表达力
-        # 4. 零额外参数，最简洁
+        # 最终 score：多头平均
+        score = attn.mean(dim=1)  # (B, N)
 
         return score
 
 
 class TokenSparse(nn.Module):
     """
-    Token 稀疏选择模块 - 简化版（保持空间结构）
+    Token 稀疏选择模块 - 改进版（专家建议）
 
-    功能：从 N 个 patch 中选择 K 个最显著的 patch，但不提取，而是将未选中的置零
-          K = ceil(N × sparse_ratio)
+    功能：从 N 个 patch 中选择 K 个最显著的 patch
 
-    改动说明：
-        - 移除 MLP predictor，直接用三个注意力得分的平均
-        - 不做 token 提取，用 mask 将未选中的 token 置零
-        - 保持输出形状 (B, N, C) 不变，维持空间结构
-        - 添加可学习的模态权重（修复3）
+    专家改进：
+        - 使用 Soft masking 替代硬 Top-K（建议3）
+        - 使用样本自适应模态权重（建议4）
 
     综合得分公式：
-        旧版：score = (s_im + s_m2 + s_m3) / 3
-        新版：score = w1*s_im + w2*s_m2 + w3*s_m3 (w 通过 softmax 归一化)
+        - 旧版：score = (s_im + s_m2 + s_m3) / 3（全局均权）
+        - 新版：score = w(sample)_1*s_im + w(sample)_2*s_m2 + w(sample)_3*s_m3（样本自适应）
+
+    Masking 策略：
+        - Soft: soft_mask = sigmoid((score - mean) / tau)（平滑，保留弱信号）
+        - Hard: Top-K 硬选择（兼容旧版）
 
     Args:
         sparse_ratio: 保留比例 (如 0.6 表示保留 60%)
         use_gumbel: 是否使用 Gumbel-Softmax 可微采样
         gumbel_tau: Gumbel 温度参数
-        use_adaptive_weights: 是否使用自适应模态权重（默认 True）
+        use_adaptive_weights: 是否使用样本自适应模态权重（建议4）
+        use_soft_masking: 是否使用 soft masking（建议3）
+        soft_mask_tau: Soft masking 温度（0.1~0.5）
     """
 
     def __init__(
         self,
+        embed_dim: int = 512,  # 专家建议4：需要 embed_dim 来创建 MLP
         sparse_ratio: float = 0.6,
         use_gumbel: bool = False,
         gumbel_tau: float = 1.0,
-        use_adaptive_weights: bool = True,  # 新增：自适应权重
+        use_adaptive_weights: bool = True,
+        use_soft_masking: bool = True,  # 专家建议3：使用 soft masking
+        soft_mask_tau: float = 0.3,      # Soft masking 温度
     ):
         super().__init__()
 
+        self.embed_dim = embed_dim
         self.sparse_ratio = sparse_ratio
         self.use_gumbel = use_gumbel
         self.gumbel_tau = gumbel_tau
         self.use_adaptive_weights = use_adaptive_weights
+        self.use_soft_masking = use_soft_masking
+        self.soft_mask_tau = soft_mask_tau
 
-        # ========== 修复3：添加可学习的模态权重 ==========
+        # ========== 修复3 + 专家建议4：添加样本自适应模态权重 ==========
         if use_adaptive_weights:
-            # 3 个可学习权重（通过 softmax 归一化为概率）
-            self.modal_weights = nn.Parameter(torch.ones(3))  # 初始化为均等权重
+            # 旧版：全局权重（3个参数，所有样本共享）
+            # self.modal_weights = nn.Parameter(torch.ones(3))
+
+            # 新版（专家建议4）：样本自适应权重
+            # 输入：3个模态的 global 特征 → MLP → 样本级权重
+            # 小 MLP：避免过拟合
+            self.modal_weight_mlp = nn.Sequential(
+                nn.Linear(embed_dim * 3, 64, bias=True),  # 拼接3个模态
+                nn.ReLU(),
+                nn.Linear(64, 3, bias=True)  # 输出3个权重
+            )
+            # 初始化：最后一层接近0，使初始权重接近均等
+            nn.init.xavier_uniform_(self.modal_weight_mlp[0].weight, gain=0.5)
+            nn.init.zeros_(self.modal_weight_mlp[0].bias)
+            nn.init.zeros_(self.modal_weight_mlp[2].weight)  # 接近0
+            nn.init.zeros_(self.modal_weight_mlp[2].bias)    # 接近0
+            # 效果：初始 softmax([0,0,0]) ≈ [0.33, 0.33, 0.33]
+        else:
+            self.modal_weight_mlp = None
 
     def forward(
         self,
@@ -228,6 +238,7 @@ class TokenSparse(nn.Module):
         self_attention: torch.Tensor,                   # (B, N) - 自注意力 score
         cross_attention_m2: torch.Tensor,               # (B, N) - 模态2交叉注意力
         cross_attention_m3: torch.Tensor,               # (B, N) - 模态3交叉注意力
+        global_feats: torch.Tensor = None,              # (B, 3*C) - 3个模态的global特征拼接（专家建议4）
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         执行语义评分和 soft masking
@@ -244,7 +255,7 @@ class TokenSparse(nn.Module):
         """
         B, N, C = tokens.size()
 
-        # ========== Step 1: 计算综合得分 ==========
+        # ========== Step 1: 计算综合得分（样本自适应权重）==========
         # 归一化各注意力得分
         def normalize_score(s: torch.Tensor) -> torch.Tensor:
             """Min-Max 归一化到 [0,1]"""
@@ -256,43 +267,69 @@ class TokenSparse(nn.Module):
         s_m2 = normalize_score(cross_attention_m2)     # (B, N) - 模态2
         s_m3 = normalize_score(cross_attention_m3)     # (B, N) - 模态3
 
-        # ========== 修复3：使用自适应模态权重替代简单平均 ==========
-        # 旧版（等权平均，无法处理噪声/缺失模态）：
-        # score = (s_im + s_m2 + s_m3) / 3  # (B, N)
+        # ========== 专家建议4：样本自适应模态权重 ==========
+        if self.use_adaptive_weights and global_feats is not None:
+            # 旧版（全局权重，无法应对样本级噪声/缺失）：
+            # weights = F.softmax(self.modal_weights, dim=0)  # (3,)
+            # score = weights[0] * s_im + weights[1] * s_m2 + weights[2] * s_m3
 
-        # 新版（可学习权重，自适应调整各模态贡献）：
-        if self.use_adaptive_weights:
-            # 通过 softmax 归一化权重，确保和为 1
-            weights = F.softmax(self.modal_weights, dim=0)  # (3,)
-            # 加权求和
-            score = weights[0] * s_im + weights[1] * s_m2 + weights[2] * s_m3  # (B, N)
+            # 新版（样本自适应，根据 global 特征生成权重）：
+            # global_feats: (B, 3*C) - 拼接的3个模态 global 特征
+            modal_logits = self.modal_weight_mlp(global_feats)  # (B, 3)
+            weights = F.softmax(modal_logits, dim=-1)  # (B, 3)
+
+            # 加权求和（样本级权重）
+            score = weights[:, 0:1] * s_im + weights[:, 1:2] * s_m2 + weights[:, 2:3] * s_m3  # (B, N)
+
+            # 优势：
+            # 1. 可以临时降低噪声/缺失模态的权重
+            # 2. 适应不同样本的模态质量差异
+            # 3. 更鲁棒，特别是模态对齐差时
         else:
-            # 回退到简单平均（兼容旧版）
+            # 回退到简单平均（兼容旧版或无 global_feats）
             score = (s_im + s_m2 + s_m3) / 3  # (B, N)
 
-        # ========== Step 2: Top-K 选择 ==========
-        num_keep = max(1, math.ceil(N * self.sparse_ratio))  # K = ceil(N×ρ)
+        # ========== Step 2: Masking 策略 ==========
+        # ========== 专家建议3：Soft masking 替代硬 Top-K ==========
+        if self.use_soft_masking:
+            # Soft masking：平滑的权重，避免"一棒子打死"
+            # 中心化：去除样本内偏置
+            centered_score = score - score.mean(dim=1, keepdim=True)  # (B, N)
+            # Sigmoid 映射到 [0, 1]，tau 控制软硬程度
+            soft_mask = torch.sigmoid(centered_score / self.soft_mask_tau)  # (B, N)
+            # 应用 soft mask
+            masked_tokens = tokens * soft_mask.unsqueeze(-1)  # (B, N, C)
 
-        # 降序排序
-        score_sorted, score_indices = torch.sort(score, dim=1, descending=True)
-        keep_policy = score_indices[:, :num_keep]  # (B, K) - 保留的索引
+            # 优势：
+            # 1. 不会把"弱但重要"的 patch 完全归零
+            # 2. 梯度更平滑，训练更稳定
+            # 3. tau 控制软硬：小 tau → 接近 hard，大 tau → 更平滑
 
-        # ========== Step 3: 生成决策矩阵 D ==========
-        if self.use_gumbel:
-            # Gumbel-Softmax + Straight-Through Estimator
-            gumbel_noise = -torch.log(-torch.log(torch.rand_like(score) + 1e-9) + 1e-9)
-            soft_mask = F.softmax((score + gumbel_noise) / self.gumbel_tau, dim=1)
-            hard_mask = torch.zeros_like(score).scatter(1, keep_policy, 1.0)
-            score_mask = hard_mask + (soft_mask - soft_mask.detach())  # STE
+            return masked_tokens, soft_mask
+
+        # 保留硬 Top-K 作为可选（原始实现）
         else:
-            # 标准 Top-K (不可微)
-            score_mask = torch.zeros_like(score).scatter(1, keep_policy, 1.0)
+            num_keep = max(1, math.ceil(N * self.sparse_ratio))  # K = ceil(N×ρ)
 
-        # ========== Step 4: 应用 mask（置零未选中的 tokens） ==========
-        # score_mask: (B, N) → (B, N, 1) 用于广播
-        masked_tokens = tokens * score_mask.unsqueeze(-1)  # (B, N, C) * (B, N, 1) = (B, N, C)
+            # 降序排序
+            score_sorted, score_indices = torch.sort(score, dim=1, descending=True)
+            keep_policy = score_indices[:, :num_keep]  # (B, K) - 保留的索引
 
-        return masked_tokens, score_mask
+            # ========== Step 3: 生成决策矩阵 D（硬选择）==========
+            if self.use_gumbel:
+                # Gumbel-Softmax + Straight-Through Estimator
+                gumbel_noise = -torch.log(-torch.log(torch.rand_like(score) + 1e-9) + 1e-9)
+                soft_mask = F.softmax((score + gumbel_noise) / self.gumbel_tau, dim=1)
+                hard_mask = torch.zeros_like(score).scatter(1, keep_policy, 1.0)
+                score_mask = hard_mask + (soft_mask - soft_mask.detach())  # STE
+            else:
+                # 标准 Top-K (不可微)
+                score_mask = torch.zeros_like(score).scatter(1, keep_policy, 1.0)
+
+            # ========== Step 4: 应用 mask（置零未选中的 tokens） ==========
+            masked_tokens = tokens * score_mask.unsqueeze(-1)  # (B, N, C)
+
+            return masked_tokens, score_mask
 
 
 class MultiModalSDTPS(nn.Module):
@@ -361,18 +398,21 @@ class MultiModalSDTPS(nn.Module):
 
         # 为每个模态创建独立的 TokenSparse 模块（简化版）
         self.rgb_sparse = TokenSparse(
+            embed_dim=embed_dim,  # 专家建议4
             sparse_ratio=sparse_ratio,
             use_gumbel=use_gumbel,
             gumbel_tau=gumbel_tau,
         )
 
         self.nir_sparse = TokenSparse(
+            embed_dim=embed_dim,  # 专家建议4
             sparse_ratio=sparse_ratio,
             use_gumbel=use_gumbel,
             gumbel_tau=gumbel_tau,
         )
 
         self.tir_sparse = TokenSparse(
+            embed_dim=embed_dim,  # 专家建议4
             sparse_ratio=sparse_ratio,
             use_gumbel=use_gumbel,
             gumbel_tau=gumbel_tau,
@@ -458,6 +498,10 @@ class MultiModalSDTPS(nn.Module):
             TI_mask: (B, N) - TIR 决策矩阵
         """
 
+        # ==================== 准备样本自适应权重的输入 ====================
+        # ========== 专家建议4：拼接3个模态的 global 特征 ==========
+        global_feats = torch.cat([RGB_global, NI_global, TI_global], dim=-1)  # (B, 3*C)
+
         # ==================== RGB 模态 ====================
         # 回退：预计算原始空间余弦后再送入 Cross-Attention（训练更稳，语义一致）
         rgb_cos_self = self._compute_cosine_similarity(RGB_cash, RGB_global)  # (B, N)
@@ -480,12 +524,13 @@ class MultiModalSDTPS(nn.Module):
         #     rgb_nir_cross = self.rgb_cross_nir(RGB_cash, NI_global, cosine_sim=None)
         #     rgb_tir_cross = self.rgb_cross_tir(RGB_cash, TI_global, cosine_sim=None)
 
-        # Step 3: Token Masking
+        # Step 3: Token Masking（传递 global_feats）
         RGB_enhanced, rgb_mask = self.rgb_sparse(
             tokens=RGB_cash,
             self_attention=rgb_self_attn,
             cross_attention_m2=rgb_nir_cross,
             cross_attention_m3=rgb_tir_cross,
+            global_feats=global_feats,  # 专家建议4
         )  # (B, N, C), (B, N)
 
         # ==================== NIR 模态 ====================
@@ -513,6 +558,7 @@ class MultiModalSDTPS(nn.Module):
             self_attention=nir_self_attn,
             cross_attention_m2=nir_rgb_cross,
             cross_attention_m3=nir_tir_cross,
+            global_feats=global_feats,  # 专家建议4
         )  # (B, N, C), (B, N)
 
         # ==================== TIR 模态 ====================
@@ -540,6 +586,7 @@ class MultiModalSDTPS(nn.Module):
             self_attention=tir_self_attn,
             cross_attention_m2=tir_rgb_cross,
             cross_attention_m3=tir_nir_cross,
+            global_feats=global_feats,  # 专家建议4
         )  # (B, N, C), (B, N)
 
         return RGB_enhanced, NI_enhanced, TI_enhanced, rgb_mask, nir_mask, tir_mask
