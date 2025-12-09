@@ -80,24 +80,19 @@ class CrossModalAttention(nn.Module):
 
         self.attn_drop = nn.Dropout(attn_drop)
 
-        # ========== 专家建议：用 Linear 层替代手动 broadcast ==========
-        # 专家原话："cosine_sim = self.linear(cosine_sim)"
+        # ========== 反向设计：移除 gate 参数，直接用 attention 加权 cosine ==========
+        # 旧版（需要 gate_linear/gate_scale/gate_bias）：
+        # self.gate_linear = nn.Linear(1, num_heads, bias=True)
+        # 或：self.gate_scale/gate_bias = nn.Parameter(...)
 
-        # 旧版（手动 expand + broadcast，代码冗长）：
-        # self.gate_scale = nn.Parameter(torch.ones(num_heads, 1, 1))
-        # self.gate_bias = nn.Parameter(torch.zeros(num_heads, 1, 1))
-        # 使用时需要：expand, view, broadcast... 9行代码
+        # 新版（反向设计，无需额外参数）：
+        # 直接用 attention 对 cosine 加权，零参数开销
+        # score = (attn * cosine).mean(dim=1)
 
-        # 新版（专家建议：Linear 层）：
-        # 对每个 token 的标量余弦做 Linear(1 → num_heads) 映射
-        self.gate_linear = nn.Linear(1, num_heads, bias=True)
-        # 参数量：num_heads × 1 + num_heads = 2×num_heads（与旧版相同）
-        # 使用：仅需 2-3 行，清晰简洁
-
-        # 可选：LayerNorm 用于稳定逐 head 的尺度
-        self.use_gate_norm = use_gate_norm
-        if use_gate_norm:
-            self.gate_norm = nn.LayerNorm(num_heads)
+        # 可选：LayerNorm（如果需要的话，当前不使用）
+        # self.use_gate_norm = use_gate_norm
+        # if use_gate_norm:
+        #     self.gate_norm = nn.LayerNorm(num_heads)
 
         self._init_weights()
 
@@ -110,12 +105,9 @@ class CrossModalAttention(nn.Module):
         if self.k_proj.bias is not None:
             nn.init.zeros_(self.k_proj.bias)
 
-        # ========== Linear 门控初始化 ==========
-        # gate_linear.weight: (num_heads, 1)
-        # gate_linear.bias: (num_heads,)
-        nn.init.constant_(self.gate_linear.weight, 1.0)
-        nn.init.constant_(self.gate_linear.bias, 0.0)
-        # 效果：gate = sigmoid(cosine) ≈ [0.27, 0.73]
+        # ========== 反向设计：无需 gate 参数，因此无需初始化 ==========
+        # 旧版需要初始化 gate_linear 或 gate_scale/bias
+        # 新版：直接用 attention 加权，无额外参数
 
     def forward(
         self,
@@ -163,48 +155,26 @@ class CrossModalAttention(nn.Module):
         # 可选：应用 dropout（训练时）
         attn = self.attn_drop(attn)
 
-        # ========== Step 3: 逐 head 余弦门控 ==========
-        # ========== 专家建议：用 Linear 层，简洁高效 ==========
-        # 旧版（手动 expand + broadcast，9行代码）：
-        # cosine_expanded = cosine_sim.unsqueeze(1)
-        # cosine_proj = cosine_expanded.expand(-1, self.num_heads, -1)
-        # gate_scale_broadcast = self.gate_scale.view(1, self.num_heads, 1)
-        # gate_bias_broadcast = self.gate_bias.view(1, self.num_heads, 1)
-        # gate_logits = cosine_proj * gate_scale_broadcast + gate_bias_broadcast
+        # ========== 反向设计：用 attention 调整 cosine（而非 cosine 门控 attention）==========
+        # 旧版（用固定 cosine 限制可学习 attention，表达力受限）：
+        # cosine_for_gate = cosine_sim.unsqueeze(-1)  # (B, N, 1)
+        # gate = sigmoid(self.gate_linear(cosine_for_gate))  # 固定先验
+        # attn_gated = attn * gate.transpose(1, 2)  # 被固定先验限制
+        # score = normalize(attn_gated).mean(dim=1)
 
-        # 新版（专家建议：Linear 层，3行代码）：
-        # cosine_sim: (B, N) → (B, N, 1) → Linear(1, num_heads) → (B, N, num_heads) → (B, num_heads, N)
-        cosine_for_gate = cosine_sim.unsqueeze(-1)  # (B, N, 1)
-        gate_logits = self.gate_linear(cosine_for_gate)  # (B, N, num_heads)
-        gate_logits = gate_logits.transpose(1, 2)  # (B, num_heads, N)
+        # 新版（反向：用可学习 attention 调整固定 cosine，更灵活）：
+        # 思路：cosine 提供稳定语义基础，attention 学习自适应权重
+        cosine_expanded = cosine_sim.unsqueeze(1)  # (B, 1, N)
+        # Attention 对 cosine 做逐 head 加权
+        weighted_cosine = attn * cosine_expanded  # (B, num_heads, N)
+        # 多头平均
+        score = weighted_cosine.mean(dim=1)  # (B, N)
 
-        # 可选：LayerNorm 稳定逐 head 尺度（当 N 可变时推荐）
-        if self.use_gate_norm:
-            # gate_logits: (B, num_heads, N) → permute → (B, N, num_heads)
-            gate_logits = gate_logits.transpose(1, 2)  # (B, N, num_heads)
-            gate_logits = self.gate_norm(gate_logits)   # LayerNorm on num_heads 维度
-            gate_logits = gate_logits.transpose(1, 2)  # (B, num_heads, N)
-
-        # Sigmoid 门控到 [0, 1]
-        gate = torch.sigmoid(gate_logits)  # (B, num_heads, N)
-
-        # ========== Step 4: 门控注意力（在多头平均前） ==========
-        # 逐 head 逐 patch 门控
-        attn_gated = attn * gate  # (B, num_heads, N) * (B, num_heads, N)
-
-        # ========== 修复1：默认开启重新归一化，保持概率性质 ==========
-        # 旧版（可选归一化，默认关闭）：
-        # if self.renormalize_attn:
-        #     attn_gated = attn_gated / (attn_gated.sum(dim=-1, keepdim=True) + 1e-8)
-
-        # 新版（强制归一化，修复概率性质）：
-        # 在 N 维度重新归一化，确保每个 head 的权重和为 1
-        attn_gated = attn_gated / (attn_gated.sum(dim=-1, keepdim=True) + 1e-8)  # (B, num_heads, N)
-        # 说明：门控后必须归一化，否则 attention 不再是概率分布
-        #       会导致后续 min-max 归一化削弱门控效果
-
-        # ========== Step 5: 多头平均 ==========
-        score = attn_gated.mean(dim=1)  # (B, N)
+        # 优势：
+        # 1. Cosine 作为稳定的主体信号（不会乱飘）
+        # 2. Attention 学习如何动态调整权重（自适应）
+        # 3. 不限制 attention 的表达力
+        # 4. 零额外参数，最简洁
 
         return score
 
