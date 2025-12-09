@@ -225,7 +225,7 @@ class DeMo(nn.Module):
             RGB_cash, RGB_global = self.BACKBONE(RGB, cam_label=cam_label, view_label=view_label)
             NI_cash, NI_global = self.BACKBONE(NI, cam_label=cam_label, view_label=view_label)
             TI_cash, TI_global = self.BACKBONE(TI, cam_label=cam_label, view_label=view_label)
-            if self.GLOBAL_LOCAL:
+            if self.GLOBAL_LOCAL:  # 设置为false
                 RGB_local = self.pool(RGB_cash.permute(0, 2, 1)).squeeze(-1)
                 NI_local = self.pool(NI_cash.permute(0, 2, 1)).squeeze(-1)
                 TI_local = self.pool(TI_cash.permute(0, 2, 1)).squeeze(-1)

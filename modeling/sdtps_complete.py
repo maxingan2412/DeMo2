@@ -94,18 +94,19 @@ class CrossModalAttention(nn.Module):
         if global_feat.dim() == 2:
             global_feat = global_feat.unsqueeze(1)  # (B, C) -> (B, 1, C)
 
-        # Q 投影: patches 作为查询
-        q = self.q_proj(patches)  # (B, N, C)
+        # Q 投影: patches 作为查询   q k 反过来。
+        q = self.q_proj(global_feat)  # (B, N, C)
         q = q.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         # (B, num_heads, N, head_dim)
 
         # K 投影: global 作为键
-        k = self.k_proj(global_feat)  # (B, 1, C)
+        k = self.k_proj(patches)  # (B, 1, C)
         k = k.reshape(B, 1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         # (B, num_heads, 1, head_dim)
 
-        # Attention score: Q @ K^T / sqrt(d)
+        # Attention score: Q @ K^T / sqrt(d),
         attn = (q @ k.transpose(-2, -1)) * self.scale  # (B, num_heads, N, 1)
+        attn = attn.softmax(dim=-1) # 再N的维度做softmax
         attn = attn.squeeze(-1)  # (B, num_heads, N)
 
         # 可选：应用 dropout（训练时）
@@ -113,9 +114,10 @@ class CrossModalAttention(nn.Module):
 
         # 合并多头得分为单一得分
         attn = attn.permute(0, 2, 1)  # (B, N, num_heads)
-        score = self.score_proj(attn).squeeze(-1)  # (B, N)
+       # score = self.score_proj(attn).squeeze(-1)  # (B, N)
+        attn = attn.mean(-1) # 利用余弦相似度分数，乘以可学习矩阵 对注意力分数做门控
 
-        return score
+        return attn
 
 
 class TokenSparse(nn.Module):
@@ -180,7 +182,7 @@ class TokenSparse(nn.Module):
         B, N, C = tokens.size()
 
         # ========== 公式1: MLP 预测 ==========
-        s_pred = self.score_predictor(tokens).squeeze(-1)  # (B, N)
+        s_pred = self.score_predictor(tokens).squeeze(-1)  # (B, N)  这个丢掉
 
         # ========== 公式2: 归一化注意力得分 ==========
         def normalize_score(s: torch.Tensor) -> torch.Tensor:
@@ -194,7 +196,8 @@ class TokenSparse(nn.Module):
         s_m3 = normalize_score(cross_attention_m3)
 
         # ========== 公式3: 综合得分 ==========
-        score = (1 - 2 * beta) * s_pred + beta * (s_m2 + s_m3 + 2 * s_im)
+       # score =  beta * (s_m2 + s_m3 + 2 * s_im)
+        score = (s_m2 + s_m3 + s_im) / 3
 
         # ========== Decision: 生成决策矩阵 D ==========
         num_keep = max(1, math.ceil(N * self.sparse_ratio))
@@ -216,10 +219,10 @@ class TokenSparse(nn.Module):
             # Straight-Through Estimator
             score_mask = hard_mask + (soft_mask - soft_mask.detach())
         else:
-            # 标准 Top-K
+            # 标准 Top-K  这里直接点成而不是选出来
             score_mask = torch.zeros_like(score).scatter(1, keep_policy, 1.0)
 
-        # ========== Selection: 提取选中的patches ==========
+        # ========== Selection: 提取选中的patches ==========   selection buyao  直接点乘得到返回带0 的token
         select_tokens = torch.gather(
             tokens, dim=1,
             index=keep_policy.unsqueeze(-1).expand(-1, -1, C)
@@ -245,7 +248,7 @@ class TokenSparse(nn.Module):
         return select_tokens, extra_token, score_mask, selected_importance, keep_policy
 
 
-class TokenAggregation(nn.Module):
+class TokenAggregation(nn.Module):  # 去掉这部分
     """
     Token 聚合模块
 
@@ -416,11 +419,11 @@ class MultiModalSDTPS(nn.Module):
             gumbel_tau=gumbel_tau,
         )
         # Stage 2: TokenAggregation
-        self.rgb_aggr = TokenAggregation(
-            dim=embed_dim,
-            keeped_patches=self.keeped_patches,
-            dim_ratio=dim_ratio,
-        )
+        # self.rgb_aggr = TokenAggregation(
+        #     dim=embed_dim,
+        #     keeped_patches=self.keeped_patches,
+        #     dim_ratio=dim_ratio,
+        # )
 
         # ========== NIR 模态 ==========
         self.nir_sparse = TokenSparse(
@@ -429,11 +432,11 @@ class MultiModalSDTPS(nn.Module):
             use_gumbel=use_gumbel,
             gumbel_tau=gumbel_tau,
         )
-        self.nir_aggr = TokenAggregation(
-            dim=embed_dim,
-            keeped_patches=self.keeped_patches,
-            dim_ratio=dim_ratio,
-        )
+        # self.nir_aggr = TokenAggregation(
+        #     dim=embed_dim,
+        #     keeped_patches=self.keeped_patches,
+        #     dim_ratio=dim_ratio,
+        # )
 
         # ========== TIR 模态 ==========
         self.tir_sparse = TokenSparse(
@@ -442,11 +445,11 @@ class MultiModalSDTPS(nn.Module):
             use_gumbel=use_gumbel,
             gumbel_tau=gumbel_tau,
         )
-        self.tir_aggr = TokenAggregation(
-            dim=embed_dim,
-            keeped_patches=self.keeped_patches,
-            dim_ratio=dim_ratio,
-        )
+        # self.tir_aggr = TokenAggregation(
+        #     dim=embed_dim,
+        #     keeped_patches=self.keeped_patches,
+        #     dim_ratio=dim_ratio,
+        # )
 
     def _compute_self_attention_cosine(
         self,
@@ -526,7 +529,7 @@ class MultiModalSDTPS(nn.Module):
         # ==================== RGB 模态 ====================
         # Step 1: 计算attention scores
         if self.cross_attn_type == 'attention':
-            # 使用真正的 Cross-Attention
+            # 使用真正的 Cross-Attention  都要加起来，normaliz
             rgb_self_attn = self.rgb_self_attn(RGB_cash, RGB_global)
             rgb_nir_cross = self.rgb_cross_nir(RGB_cash, NI_global)
             rgb_tir_cross = self.rgb_cross_tir(RGB_cash, TI_global)
