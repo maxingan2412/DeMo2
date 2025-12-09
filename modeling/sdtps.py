@@ -459,7 +459,7 @@ class MultiModalSDTPS(nn.Module):
         # 新版（使用 einsum，避免中间张量）：
         patches_norm = F.normalize(patches, dim=-1)           # (B, N, C)
         global_norm = F.normalize(global_feat, dim=-1)        # (B, 1, C)
-        cosine_sim = torch.einsum('bnc,b1c->bn', patches_norm, global_norm)  # (B, N)
+        cosine_sim = torch.einsum('bnc,boc->bn', patches_norm, global_norm)  # (B, N)
         # 或使用矩阵乘法（等价）：
         # cosine_sim = (patches_norm @ global_norm.transpose(-2, -1)).squeeze(-1)
 
