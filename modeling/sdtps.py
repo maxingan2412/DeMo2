@@ -13,7 +13,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple
+from typing import Tuple
 
 
 class CrossModalAttention(nn.Module):
@@ -117,7 +117,7 @@ class CrossModalAttention(nn.Module):
         self,
         patches: torch.Tensor,       # (B, N, C) - 键（被检索）
         global_feat: torch.Tensor,   # (B, C) or (B, 1, C) - 查询（检索者）
-        cosine_sim: Optional[torch.Tensor] = None,  # (B, N) - 预计算的余弦（可选）
+        cosine_sim: torch.Tensor,    # (B, N) - 预计算的原始空间余弦（各 head 共享）
     ) -> torch.Tensor:
         """
         计算 Cross-Attention score（带逐 head 余弦门控）
@@ -125,7 +125,7 @@ class CrossModalAttention(nn.Module):
         Args:
             patches: (B, N, C) - patch tokens 作为 Key（被检索）
             global_feat: (B, C) or (B, 1, C) - global feature 作为 Query（检索者）
-            cosine_sim: (B, N) - 预计算的余弦相似度（可选，如为 None 则在投影后计算）
+            cosine_sim: (B, N) - 预计算的余弦相似度（原始特征空间，各 head 共享）
 
         Returns:
             score: (B, N) - 每个 patch 的重要性得分
@@ -160,23 +160,23 @@ class CrossModalAttention(nn.Module):
         attn = self.attn_drop(attn)
 
         # ========== Step 3: 逐 head 余弦门控 ==========
-        # ========== 修复5+6：统一特征空间，在投影后计算余弦 ==========
-        # 旧版（使用预计算的原始空间余弦，特征空间不一致）：
-        # cosine_expanded = cosine_sim.unsqueeze(1)  # (B, 1, N)
+        # 回退：使用原始空间余弦（训练更稳定、物理意义清晰，各 head 共享同一余弦先验）
+        cosine_expanded = cosine_sim.unsqueeze(1)  # (B, 1, N)
+        cosine_proj = cosine_expanded.expand(-1, self.num_heads, -1)  # (B, num_heads, N)
 
-        # 新版（在投影后的特征空间计算余弦，与 attention 对齐）：
-        if cosine_sim is None:
-            # 在投影后的 Q/K 空间计算余弦相似度
-            # q: (B, num_heads, 1, head_dim), k: (B, num_heads, N, head_dim)
-            q_norm = F.normalize(q, dim=-1)  # (B, num_heads, 1, head_dim)
-            k_norm = F.normalize(k, dim=-1)  # (B, num_heads, N, head_dim)
-            # 余弦相似度：(B, num_heads, 1, head_dim) @ (B, num_heads, head_dim, N)
-            cosine_proj = (q_norm @ k_norm.transpose(-2, -1)).squeeze(2)  # (B, num_heads, N)
-        else:
-            # 兼容旧版：使用预计算的余弦（原始特征空间）
-            cosine_proj = cosine_sim.unsqueeze(1)  # (B, 1, N)
-            # 扩展到所有 head（假设各 head 共享同一余弦）
-            cosine_proj = cosine_proj.expand(-1, self.num_heads, -1)  # (B, num_heads, N)
+        # 保留投影空间余弦的实现（当前停用，避免门控与 attn 过度耦合导致初期不稳）
+        # 投影空间版本：在 Q/K 投影后的特征空间计算余弦，与 attention 对齐
+        # if cosine_sim is None:
+        #     # 在投影后的 Q/K 空间计算余弦相似度
+        #     # q: (B, num_heads, 1, head_dim), k: (B, num_heads, N, head_dim)
+        #     q_norm = F.normalize(q, dim=-1)  # (B, num_heads, 1, head_dim)
+        #     k_norm = F.normalize(k, dim=-1)  # (B, num_heads, N, head_dim)
+        #     # 余弦相似度：(B, num_heads, 1, head_dim) @ (B, num_heads, head_dim, N)
+        #     cosine_proj = (q_norm @ k_norm.transpose(-2, -1)).squeeze(2)  # (B, num_heads, N)
+        # else:
+        #     # 使用预计算的余弦（原始特征空间）
+        #     cosine_proj = cosine_sim.unsqueeze(1)  # (B, 1, N)
+        #     cosine_proj = cosine_proj.expand(-1, self.num_heads, -1)  # (B, num_heads, N)
 
         # 逐 head 仿射变换：每个 head 有独立的 scale 和 bias
         # self.gate_scale: (num_heads, 1, 1) → view → (1, num_heads, 1)
@@ -496,24 +496,26 @@ class MultiModalSDTPS(nn.Module):
         """
 
         # ==================== RGB 模态 ====================
-        # ========== 修复5+6：简化冗余，不再预计算原始空间余弦 ==========
-        # 旧版（先计算原始空间余弦，再传给 Cross-Attention）：
-        # rgb_cos_self = self._compute_cosine_similarity(RGB_cash, RGB_global)  # (B, N)
-        # rgb_cos_nir = self._compute_cosine_similarity(RGB_cash, NI_global)    # (B, N)
-        # rgb_cos_tir = self._compute_cosine_similarity(RGB_cash, TI_global)    # (B, N)
-        # rgb_self_attn = self.rgb_self_attn(RGB_cash, RGB_global, rgb_cos_self)
+        # 回退：预计算原始空间余弦后再送入 Cross-Attention（训练更稳，语义一致）
+        rgb_cos_self = self._compute_cosine_similarity(RGB_cash, RGB_global)  # (B, N)
+        rgb_cos_nir = self._compute_cosine_similarity(RGB_cash, NI_global)    # (B, N)
+        rgb_cos_tir = self._compute_cosine_similarity(RGB_cash, TI_global)    # (B, N)
 
-        # 新版（让 Cross-Attention 内部在投影后计算余弦，统一特征空间）：
         if self.use_cross_attn:
-            # 传递 None，让 CrossModalAttention 内部在投影后计算余弦
-            rgb_self_attn = self.rgb_self_attn(RGB_cash, RGB_global, cosine_sim=None)
-            rgb_nir_cross = self.rgb_cross_nir(RGB_cash, NI_global, cosine_sim=None)
-            rgb_tir_cross = self.rgb_cross_tir(RGB_cash, TI_global, cosine_sim=None)
+            rgb_self_attn = self.rgb_self_attn(RGB_cash, RGB_global, rgb_cos_self)
+            rgb_nir_cross = self.rgb_cross_nir(RGB_cash, NI_global, rgb_cos_nir)
+            rgb_tir_cross = self.rgb_cross_tir(RGB_cash, TI_global, rgb_cos_tir)
         else:
-            # 仅使用余弦相似度（回退模式）
-            rgb_self_attn = self._compute_cosine_similarity(RGB_cash, RGB_global)
-            rgb_nir_cross = self._compute_cosine_similarity(RGB_cash, NI_global)
-            rgb_tir_cross = self._compute_cosine_similarity(RGB_cash, TI_global)
+            # 仅使用余弦相似度
+            rgb_self_attn = rgb_cos_self
+            rgb_nir_cross = rgb_cos_nir
+            rgb_tir_cross = rgb_cos_tir
+
+        # 保留投影空间余弦的实现作为注释（未来可通过超参数切换）
+        # if self.use_cross_attn:
+        #     rgb_self_attn = self.rgb_self_attn(RGB_cash, RGB_global, cosine_sim=None)
+        #     rgb_nir_cross = self.rgb_cross_nir(RGB_cash, NI_global, cosine_sim=None)
+        #     rgb_tir_cross = self.rgb_cross_tir(RGB_cash, TI_global, cosine_sim=None)
 
         # Step 3: Token Masking
         RGB_enhanced, rgb_mask = self.rgb_sparse(
@@ -524,15 +526,24 @@ class MultiModalSDTPS(nn.Module):
         )  # (B, N, C), (B, N)
 
         # ==================== NIR 模态 ====================
-        # ========== 修复5+6：同样简化 NIR 模态的余弦计算 ==========
+        nir_cos_self = self._compute_cosine_similarity(NI_cash, NI_global)
+        nir_cos_rgb = self._compute_cosine_similarity(NI_cash, RGB_global)
+        nir_cos_tir = self._compute_cosine_similarity(NI_cash, TI_global)
+
         if self.use_cross_attn:
-            nir_self_attn = self.nir_self_attn(NI_cash, NI_global, cosine_sim=None)
-            nir_rgb_cross = self.nir_cross_rgb(NI_cash, RGB_global, cosine_sim=None)
-            nir_tir_cross = self.nir_cross_tir(NI_cash, TI_global, cosine_sim=None)
+            nir_self_attn = self.nir_self_attn(NI_cash, NI_global, nir_cos_self)
+            nir_rgb_cross = self.nir_cross_rgb(NI_cash, RGB_global, nir_cos_rgb)
+            nir_tir_cross = self.nir_cross_tir(NI_cash, TI_global, nir_cos_tir)
         else:
-            nir_self_attn = self._compute_cosine_similarity(NI_cash, NI_global)
-            nir_rgb_cross = self._compute_cosine_similarity(NI_cash, RGB_global)
-            nir_tir_cross = self._compute_cosine_similarity(NI_cash, TI_global)
+            nir_self_attn = nir_cos_self
+            nir_rgb_cross = nir_cos_rgb
+            nir_tir_cross = nir_cos_tir
+
+        # 保留投影空间余弦的实现作为注释（未来可通过超参数切换）
+        # if self.use_cross_attn:
+        #     nir_self_attn = self.nir_self_attn(NI_cash, NI_global, cosine_sim=None)
+        #     nir_rgb_cross = self.nir_cross_rgb(NI_cash, RGB_global, cosine_sim=None)
+        #     nir_tir_cross = self.nir_cross_tir(NI_cash, TI_global, cosine_sim=None)
 
         NI_enhanced, nir_mask = self.nir_sparse(
             tokens=NI_cash,
@@ -542,15 +553,24 @@ class MultiModalSDTPS(nn.Module):
         )  # (B, N, C), (B, N)
 
         # ==================== TIR 模态 ====================
-        # ========== 修复5+6：同样简化 TIR 模态的余弦计算 ==========
+        tir_cos_self = self._compute_cosine_similarity(TI_cash, TI_global)
+        tir_cos_rgb = self._compute_cosine_similarity(TI_cash, RGB_global)
+        tir_cos_nir = self._compute_cosine_similarity(TI_cash, NI_global)
+
         if self.use_cross_attn:
-            tir_self_attn = self.tir_self_attn(TI_cash, TI_global, cosine_sim=None)
-            tir_rgb_cross = self.tir_cross_rgb(TI_cash, RGB_global, cosine_sim=None)
-            tir_nir_cross = self.tir_cross_nir(TI_cash, NI_global, cosine_sim=None)
+            tir_self_attn = self.tir_self_attn(TI_cash, TI_global, tir_cos_self)
+            tir_rgb_cross = self.tir_cross_rgb(TI_cash, RGB_global, tir_cos_rgb)
+            tir_nir_cross = self.tir_cross_nir(TI_cash, NI_global, tir_cos_nir)
         else:
-            tir_self_attn = self._compute_cosine_similarity(TI_cash, TI_global)
-            tir_rgb_cross = self._compute_cosine_similarity(TI_cash, RGB_global)
-            tir_nir_cross = self._compute_cosine_similarity(TI_cash, NI_global)
+            tir_self_attn = tir_cos_self
+            tir_rgb_cross = tir_cos_rgb
+            tir_nir_cross = tir_cos_nir
+
+        # 保留投影空间余弦的实现作为注释（未来可通过超参数切换）
+        # if self.use_cross_attn:
+        #     tir_self_attn = self.tir_self_attn(TI_cash, TI_global, cosine_sim=None)
+        #     tir_rgb_cross = self.tir_cross_rgb(TI_cash, RGB_global, cosine_sim=None)
+        #     tir_nir_cross = self.tir_cross_nir(TI_cash, NI_global, cosine_sim=None)
 
         TI_enhanced, tir_mask = self.tir_sparse(
             tokens=TI_cash,
