@@ -262,18 +262,28 @@ class MultiModalSDTPS(nn.Module):
     def __init__(
         self,
         embed_dim: int = 512,
+        num_patches: int = 128,  # 兼容参数，未使用
         sparse_ratio: float = 0.6,
+        aggr_ratio: float = 0.5,  # 兼容参数，未使用
         use_gumbel: bool = False,
         gumbel_tau: float = 1.0,
         beta: float = 0.25,  # 保留参数用于兼容，但不使用
-        use_cross_attn: bool = True,
-        num_heads: int = 4,
+        cross_attn_type: str = 'attention',  # 'attention' or 'cosine'
+        cross_attn_heads: int = 4,  # 注意力头数
+        use_cross_attn: bool = None,  # 向后兼容，如果为 None 则从 cross_attn_type 推断
     ):
         super().__init__()
 
         self.embed_dim = embed_dim
         self.sparse_ratio = sparse_ratio
+
+        # 处理兼容性：如果 use_cross_attn 未指定，从 cross_attn_type 推断
+        if use_cross_attn is None:
+            use_cross_attn = (cross_attn_type == 'attention')
         self.use_cross_attn = use_cross_attn
+
+        # 设置注意力头数
+        num_heads = cross_attn_heads
 
         # 为每个模态创建独立的 TokenSparse 模块（简化版）
         self.rgb_sparse = TokenSparse(

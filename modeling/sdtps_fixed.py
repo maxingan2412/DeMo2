@@ -1,9 +1,12 @@
 """
-SDTPS: 修复版本
+SDTPS: Sparse and Dense Token-Aware Patch Selection for Multi-Modal ReID
+基于 SEPS 论文的 TokenSparse 模块，适配多模态行人/车辆重识别
 
-修复内容：
-1. 在 attention 计算中添加 with torch.no_grad()
-2. 实现真正的 Gumbel-Softmax 可微采样
+改动说明：
+- 原始：使用 图像自注意力 + 稀疏文本 + 稠密文本 生成 score
+- 新版：使用 图像自注意力 + 其他两个模态的全局特征 生成 score
+- 应用场景：RGB/NIR/TIR 三模态重识别
+- 引入 Cross-Attention 机制，用余弦相似度作为门控
 """
 
 import math
@@ -13,302 +16,433 @@ import torch.nn.functional as F
 from typing import Optional, Tuple
 
 
-class TokenSparse(nn.Module):
+class CrossModalAttention(nn.Module):
     """
-    Token 稀疏选择模块 - 修复版
+    Cross-Attention 模块（带余弦相似度门控）
 
-    修复内容：
-    1. Attention 计算使用 no_grad
-    2. Gumbel-Softmax 提供真正的可微采样
+    核心改动：
+    1. Q/K 反向：global 作为 Query，patches 作为 Key
+       - 让 patches 去检索 global，看哪些 patch 对 global 重要
+    2. 余弦相似度门控：先计算余弦相似度，再用于加权注意力分数
+    3. 在 N（patch）维度做 softmax
+
+    计算流程：
+    1. 余弦相似度：cos_sim = normalize(patches) @ normalize(global)^T  # (B, N)
+    2. Q/K 投影：
+       Q = W_q @ global      # (B, 1, C) -> (B, 1, C)
+       K = W_k @ patches     # (B, N, C) -> (B, N, C)
+    3. Attention：
+       attn = softmax(Q @ K^T / sqrt(d), dim=N)  # (B, num_heads, 1, N)
+    4. 门控融合：
+       score = attn * cos_sim  # 用余弦相似度加权注意力
     """
 
     def __init__(
         self,
         embed_dim: int = 512,
+        num_heads: int = 4,
+        qkv_bias: bool = True,
+        attn_drop: float = 0.0,
+    ):
+        super().__init__()
+
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        # Q, K 投影（Q 用于 global，K 用于 patches）
+        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=qkv_bias)
+        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=qkv_bias)
+
+        self.attn_drop = nn.Dropout(attn_drop)
+
+        # 门控权重：学习如何结合余弦相似度和注意力分数
+        self.gate_weight = nn.Parameter(torch.ones(1))
+
+        self._init_weights()
+
+    def _init_weights(self):
+        """初始化权重"""
+        nn.init.xavier_uniform_(self.q_proj.weight)
+        nn.init.xavier_uniform_(self.k_proj.weight)
+        if self.q_proj.bias is not None:
+            nn.init.zeros_(self.q_proj.bias)
+        if self.k_proj.bias is not None:
+            nn.init.zeros_(self.k_proj.bias)
+
+    def forward(
+        self,
+        patches: torch.Tensor,       # (B, N, C) - 键（被检索）
+        global_feat: torch.Tensor,   # (B, C) or (B, 1, C) - 查询（检索者）
+        cosine_sim: torch.Tensor,    # (B, N) - 预计算的余弦相似度
+    ) -> torch.Tensor:
+        """
+        计算 Cross-Attention score（带余弦相似度门控）
+
+        Args:
+            patches: (B, N, C) - patch tokens 作为 Key（被检索）
+            global_feat: (B, C) or (B, 1, C) - global feature 作为 Query（检索者）
+            cosine_sim: (B, N) - 预计算的余弦相似度，用于门控
+
+        Returns:
+            score: (B, N) - 每个 patch 的重要性得分
+        """
+        B, N, C = patches.shape
+
+        if global_feat.dim() == 2:
+            global_feat = global_feat.unsqueeze(1)  # (B, C) -> (B, 1, C)
+
+        # Q 投影: global 作为查询
+        q = self.q_proj(global_feat)  # (B, 1, C)
+        q = q.reshape(B, 1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        # (B, num_heads, 1, head_dim)
+
+        # K 投影: patches 作为键
+        k = self.k_proj(patches)  # (B, N, C)
+        k = k.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        # (B, num_heads, N, head_dim)
+
+        # Attention score: Q @ K^T / sqrt(d)
+        # q: (B, num_heads, 1, head_dim) @ k^T: (B, num_heads, head_dim, N)
+        # = (B, num_heads, 1, N)
+        attn = (q @ k.transpose(-2, -1)) * self.scale  # (B, num_heads, 1, N)
+
+        # 在 N（patch）维度做 softmax
+        attn = attn.softmax(dim=-1)  # (B, num_heads, 1, N) - 在最后一维（N）做 softmax
+        attn = attn.squeeze(2)  # (B, num_heads, N)
+
+        # 可选：应用 dropout（训练时）
+        attn = self.attn_drop(attn)
+
+        # 多头平均
+        attn = attn.mean(dim=1)  # (B, N)
+
+        # 门控融合：用余弦相似度加权注意力分数
+        # score = sigmoid(gate_weight) * attn + (1 - sigmoid(gate_weight)) * cosine_sim
+        gate = torch.sigmoid(self.gate_weight)
+        score = gate * attn + (1 - gate) * cosine_sim  # (B, N)
+
+        return score
+
+
+class TokenSparse(nn.Module):
+    """
+    Token 稀疏选择模块 - 简化版（保持空间结构）
+
+    功能：从 N 个 patch 中选择 K 个最显著的 patch，但不提取，而是将未选中的置零
+          K = ceil(N × sparse_ratio)
+
+    改动说明：
+        - 移除 MLP predictor，直接用三个注意力得分的平均
+        - 不做 token 提取，用 mask 将未选中的 token 置零
+        - 保持输出形状 (B, N, C) 不变，维持空间结构
+
+    综合得分公式（简化）：
+        score = (s_im + s_m2 + s_m3) / 3
+
+    Args:
+        sparse_ratio: 保留比例 (如 0.6 表示保留 60%)
+        use_gumbel: 是否使用 Gumbel-Softmax 可微采样
+        gumbel_tau: Gumbel 温度参数
+    """
+
+    def __init__(
+        self,
         sparse_ratio: float = 0.6,
         use_gumbel: bool = False,
         gumbel_tau: float = 1.0,
     ):
         super().__init__()
 
-        self.embed_dim = embed_dim
         self.sparse_ratio = sparse_ratio
         self.use_gumbel = use_gumbel
         self.gumbel_tau = gumbel_tau
 
-        # MLP Score Predictor
-        self.score_predictor = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim // 4),
-            nn.GELU(),
-            nn.Linear(embed_dim // 4, 1),
-            nn.Sigmoid(),
-        )
-
     def forward(
         self,
-        tokens: torch.Tensor,
-        self_attention: torch.Tensor,
-        cross_attention_m2: torch.Tensor,
-        cross_attention_m3: torch.Tensor,
-        beta: float = 0.25,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        tokens: torch.Tensor,                           # (B, N, C) - patch 特征
+        self_attention: torch.Tensor,                   # (B, N) - 自注意力 score
+        cross_attention_m2: torch.Tensor,               # (B, N) - 模态2交叉注意力
+        cross_attention_m3: torch.Tensor,               # (B, N) - 模态3交叉注意力
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Token selection with Gumbel-Softmax
+        执行语义评分和 soft masking
 
         Args:
-            tokens: (B, N, C)
-            self_attention: (B, N)
-            cross_attention_m2: (B, N)
-            cross_attention_m3: (B, N)
-            beta: score combination weight
+            tokens: (B, N, C) - patch 特征
+            self_attention: (B, N) - 自注意力 score (s^im)
+            cross_attention_m2: (B, N) - 模态2交叉注意力 (s^{m2})
+            cross_attention_m3: (B, N) - 模态3交叉注意力 (s^{m3})
 
         Returns:
-            select_tokens: (B, K, C) - selected tokens
-            extra_token: (B, 1, C) - aggregated redundant tokens
-            score_mask: (B, N) - decision matrix
+            masked_tokens: (B, N, C) - 置零后的 tokens（保持空间结构）
+            score_mask: (B, N) - 决策矩阵 D，1=选中，0=丢弃
         """
         B, N, C = tokens.size()
 
         # ========== Step 1: 计算综合得分 ==========
-        s_pred = self.score_predictor(tokens).squeeze(-1)
-
+        # 归一化各注意力得分
         def normalize_score(s: torch.Tensor) -> torch.Tensor:
+            """Min-Max 归一化到 [0,1]"""
             s_min = s.min(dim=-1, keepdim=True)[0]
             s_max = s.max(dim=-1, keepdim=True)[0]
             return (s - s_min) / (s_max - s_min + 1e-8)
 
-        s_im = normalize_score(self_attention)
-        s_m2 = normalize_score(cross_attention_m2)
-        s_m3 = normalize_score(cross_attention_m3)
+        s_im = normalize_score(self_attention)         # (B, N) - 自注意力
+        s_m2 = normalize_score(cross_attention_m2)     # (B, N) - 模态2
+        s_m3 = normalize_score(cross_attention_m3)     # (B, N) - 模态3
 
-        score = (1 - 2 * beta) * s_pred + beta * (s_m2 + s_m3 + 2 * s_im)
+        # 简化得分：三个注意力的平均
+        score = (s_im + s_m2 + s_m3) / 3  # (B, N)
 
-        # ========== Step 2: Token Selection ==========
-        num_keep = max(1, math.ceil(N * self.sparse_ratio))
+        # ========== Step 2: Top-K 选择 ==========
+        num_keep = max(1, math.ceil(N * self.sparse_ratio))  # K = ceil(N×ρ)
 
-        if self.training and self.use_gumbel:
-            # ========== 训练时：Gumbel-Softmax 可微采样 ==========
-            # 1. 添加 Gumbel 噪声
+        # 降序排序
+        score_sorted, score_indices = torch.sort(score, dim=1, descending=True)
+        keep_policy = score_indices[:, :num_keep]  # (B, K) - 保留的索引
+
+        # ========== Step 3: 生成决策矩阵 D ==========
+        if self.use_gumbel:
+            # Gumbel-Softmax + Straight-Through Estimator
             gumbel_noise = -torch.log(-torch.log(torch.rand_like(score) + 1e-9) + 1e-9)
-            logits = (score + gumbel_noise) / self.gumbel_tau
-
-            # 2. 生成软权重（所有 tokens 的概率分布）
-            soft_weights = F.softmax(logits, dim=1)  # (B, N)
-
-            # 3. Top-K 用于生成硬选择（前向传播）
-            _, top_k_indices = torch.topk(score, num_keep, dim=1)
-            hard_mask = torch.zeros_like(score).scatter(1, top_k_indices, 1.0)
-
-            # 4. Straight-Through Estimator
-            # 前向：使用 hard_mask；反向：使用 soft_weights
-            selection_weights = hard_mask + (soft_weights - soft_weights.detach())
-
-            # 5. 使用软权重进行加权选择（可微）
-            # 方式 1：加权所有 tokens，然后提取非零部分
-            weighted_tokens = tokens * selection_weights.unsqueeze(-1)  # (B, N, C)
-
-            # 提取选中的 tokens（通过 gather）
-            select_tokens = torch.gather(
-                weighted_tokens, dim=1,
-                index=top_k_indices.unsqueeze(-1).expand(-1, -1, C)
-            )  # (B, K, C)
-
-            # 6. Extra token：未选中的 tokens 的加权平均
-            non_selection_weights = 1 - selection_weights
-            non_selection_weights = non_selection_weights / (non_selection_weights.sum(dim=1, keepdim=True) + 1e-8)
-            extra_token = torch.sum(
-                tokens * non_selection_weights.unsqueeze(-1), dim=1, keepdim=True
-            )  # (B, 1, C)
-
-            score_mask = selection_weights
-
+            soft_mask = F.softmax((score + gumbel_noise) / self.gumbel_tau, dim=1)
+            hard_mask = torch.zeros_like(score).scatter(1, keep_policy, 1.0)
+            score_mask = hard_mask + (soft_mask - soft_mask.detach())  # STE
         else:
-            # ========== 推理时：Top-K 硬选择（快速） ==========
-            score_sorted, score_indices = torch.sort(score, dim=1, descending=True)
-            keep_policy = score_indices[:, :num_keep]
-
-            # 硬选择
-            select_tokens = torch.gather(
-                tokens, dim=1,
-                index=keep_policy.unsqueeze(-1).expand(-1, -1, C)
-            )
-
-            # Extra token
-            non_keep_policy = score_indices[:, num_keep:]
-            non_tokens = torch.gather(
-                tokens, dim=1,
-                index=non_keep_policy.unsqueeze(-1).expand(-1, -1, C)
-            )
-            non_keep_score = score_sorted[:, num_keep:]
-            non_keep_score = F.softmax(non_keep_score, dim=1).unsqueeze(-1)
-            extra_token = torch.sum(non_tokens * non_keep_score, dim=1, keepdim=True)
-
+            # 标准 Top-K (不可微)
             score_mask = torch.zeros_like(score).scatter(1, keep_policy, 1.0)
 
-        return select_tokens, extra_token, score_mask
+        # ========== Step 4: 应用 mask（置零未选中的 tokens） ==========
+        # score_mask: (B, N) → (B, N, 1) 用于广播
+        masked_tokens = tokens * score_mask.unsqueeze(-1)  # (B, N, C) * (B, N, 1) = (B, N, C)
+
+        return masked_tokens, score_mask
 
 
 class MultiModalSDTPS(nn.Module):
     """
-    多模态 SDTPS 模块 - 修复版
+    多模态 SDTPS 模块 - 带 Cross-Attention 和余弦相似度门控
 
-    修复内容：
-    1. Attention 计算使用 with torch.no_grad()
-    2. 支持 Gumbel-Softmax 可微采样
+    功能：
+        1. 对每个模态的 patch 特征进行稀疏选择（soft masking）
+        2. 每个模态使用其他两个模态的全局特征作为引导
+        3. 结合余弦相似度和可学习的 Cross-Attention
+        4. 输出 masked 的多模态特征，保持原始 token 数量
+
+    改动说明：
+        - 同时使用余弦相似度和 Cross-Attention（不再二选一）
+        - Q/K 反向：global 作为 Query，patches 作为 Key
+        - 余弦相似度作为门控，加权注意力分数
+        - 在 patch 维度（N）做 softmax
+
+    流程（以 RGB 为例）：
+        1. 计算余弦相似度：
+           cos_self = cosine(RGB_patches, RGB_global)
+           cos_nir = cosine(RGB_patches, NIR_global)
+           cos_tir = cosine(RGB_patches, TIR_global)
+
+        2. 计算 Cross-Attention（带余弦门控）：
+           attn_self = CrossAttn(RGB_patches, RGB_global, cos_self)
+           attn_nir = CrossAttn(RGB_patches, NIR_global, cos_nir)
+           attn_tir = CrossAttn(RGB_patches, TIR_global, cos_tir)
+
+        3. 综合 score → Top-K mask → 置零未选中的 tokens
+
+    Args:
+        embed_dim: 特征维度
+        sparse_ratio: token 保留比例
+        use_gumbel: 是否使用 Gumbel-Softmax
+        gumbel_tau: Gumbel 温度
+        use_cross_attn: 是否使用 Cross-Attention（默认 True）
+        num_heads: 注意力头数（默认 4）
     """
 
     def __init__(
         self,
         embed_dim: int = 512,
+        num_patches: int = 128,  # 兼容参数，未使用
         sparse_ratio: float = 0.6,
+        aggr_ratio: float = 0.5,  # 兼容参数，未使用
         use_gumbel: bool = False,
         gumbel_tau: float = 1.0,
-        beta: float = 0.25,
+        beta: float = 0.25,  # 保留参数用于兼容，但不使用
+        cross_attn_type: str = 'attention',  # 'attention' or 'cosine'
+        cross_attn_heads: int = 4,  # 注意力头数
+        use_cross_attn: bool = None,  # 向后兼容，如果为 None 则从 cross_attn_type 推断
     ):
         super().__init__()
 
         self.embed_dim = embed_dim
         self.sparse_ratio = sparse_ratio
-        self.beta = beta
 
+        # 处理兼容性：如果 use_cross_attn 未指定，从 cross_attn_type 推断
+        if use_cross_attn is None:
+            use_cross_attn = (cross_attn_type == 'attention')
+        self.use_cross_attn = use_cross_attn
+
+        # 设置注意力头数
+        num_heads = cross_attn_heads
+
+        # 为每个模态创建独立的 TokenSparse 模块（简化版）
         self.rgb_sparse = TokenSparse(
-            embed_dim=embed_dim,
             sparse_ratio=sparse_ratio,
             use_gumbel=use_gumbel,
             gumbel_tau=gumbel_tau,
         )
 
         self.nir_sparse = TokenSparse(
-            embed_dim=embed_dim,
             sparse_ratio=sparse_ratio,
             use_gumbel=use_gumbel,
             gumbel_tau=gumbel_tau,
         )
 
         self.tir_sparse = TokenSparse(
-            embed_dim=embed_dim,
             sparse_ratio=sparse_ratio,
             use_gumbel=use_gumbel,
             gumbel_tau=gumbel_tau,
         )
 
-    def _compute_self_attention(
+        # Cross-Attention 模块（如果启用）
+        if self.use_cross_attn:
+            # RGB 模态的 Cross-Attention
+            self.rgb_self_attn = CrossModalAttention(embed_dim, num_heads)
+            self.rgb_cross_nir = CrossModalAttention(embed_dim, num_heads)
+            self.rgb_cross_tir = CrossModalAttention(embed_dim, num_heads)
+
+            # NIR 模态的 Cross-Attention
+            self.nir_self_attn = CrossModalAttention(embed_dim, num_heads)
+            self.nir_cross_rgb = CrossModalAttention(embed_dim, num_heads)
+            self.nir_cross_tir = CrossModalAttention(embed_dim, num_heads)
+
+            # TIR 模态的 Cross-Attention
+            self.tir_self_attn = CrossModalAttention(embed_dim, num_heads)
+            self.tir_cross_rgb = CrossModalAttention(embed_dim, num_heads)
+            self.tir_cross_nir = CrossModalAttention(embed_dim, num_heads)
+
+    def _compute_cosine_similarity(
         self,
-        patches: torch.Tensor,
-        global_feat: torch.Tensor,
+        patches: torch.Tensor,       # (B, N, C)
+        global_feat: torch.Tensor,   # (B, C) or (B, 1, C)
     ) -> torch.Tensor:
         """
-        计算自注意力（修复版：添加 no_grad）
+        计算余弦相似度
 
         Args:
-            patches: (B, N, C)
-            global_feat: (B, C) or (B, 1, C)
+            patches: (B, N, C) - patch 特征
+            global_feat: (B, C) or (B, 1, C) - 全局特征
 
         Returns:
-            (B, N) - attention scores
+            (B, N) - 余弦相似度 score
         """
         if global_feat.dim() == 2:
-            global_feat = global_feat.unsqueeze(1)
+            global_feat = global_feat.unsqueeze(1)  # (B, C) → (B, 1, C)
 
-        # 修复：添加 with torch.no_grad()
-        with torch.no_grad():
-            patches_norm = F.normalize(patches, dim=-1)
-            global_norm = F.normalize(global_feat, dim=-1)
-            self_attn = (patches_norm * global_norm).sum(dim=-1)
+        # L2 归一化
+        patches_norm = F.normalize(patches, dim=-1)           # (B, N, C)
+        global_norm = F.normalize(global_feat, dim=-1)        # (B, 1, C)
 
-        return self_attn
+        # 计算相似度
+        cosine_sim = (patches_norm * global_norm).sum(dim=-1)  # (B, N)
 
-    def _compute_cross_attention(
-        self,
-        patches: torch.Tensor,
-        cross_global: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        计算交叉注意力（修复版：添加 no_grad）
-
-        Args:
-            patches: (B, N, C)
-            cross_global: (B, C) or (B, 1, C)
-
-        Returns:
-            (B, N) - attention scores
-        """
-        if cross_global.dim() == 2:
-            cross_global = cross_global.unsqueeze(1)
-
-        # 修复：添加 with torch.no_grad()
-        with torch.no_grad():
-            patches_norm = F.normalize(patches, dim=-1)
-            cross_norm = F.normalize(cross_global, dim=-1)
-            cross_attn = (patches_norm * cross_norm).sum(dim=-1)
-
-        return cross_attn
+        return cosine_sim
 
     def forward(
         self,
-        RGB_cash: torch.Tensor,
-        NI_cash: torch.Tensor,
-        TI_cash: torch.Tensor,
-        RGB_global: torch.Tensor,
-        NI_global: torch.Tensor,
-        TI_global: torch.Tensor,
+        RGB_cash: torch.Tensor,      # (B, N, C) - RGB patch 特征
+        NI_cash: torch.Tensor,       # (B, N, C) - NIR patch 特征
+        TI_cash: torch.Tensor,       # (B, N, C) - TIR patch 特征
+        RGB_global: torch.Tensor,    # (B, C) - RGB 全局特征
+        NI_global: torch.Tensor,     # (B, C) - NIR 全局特征
+        TI_global: torch.Tensor,     # (B, C) - TIR 全局特征
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
                torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Multi-modal token selection
+        多模态 token selection（保持空间结构）
 
         Args:
-            RGB_cash, NI_cash, TI_cash: (B, N, C)
-            RGB_global, NI_global, TI_global: (B, C)
+            RGB_cash: (B, N, C) - RGB patch 特征
+            NI_cash: (B, N, C) - NIR patch 特征
+            TI_cash: (B, N, C) - TIR patch 特征
+            RGB_global: (B, C) - RGB 全局特征
+            NI_global: (B, C) - NIR 全局特征
+            TI_global: (B, C) - TIR 全局特征
 
         Returns:
-            RGB_enhanced, NI_enhanced, TI_enhanced: (B, K+1, C)
-            rgb_mask, nir_mask, tir_mask: (B, N)
+            RGB_enhanced: (B, N, C) - masked RGB 特征
+            NI_enhanced: (B, N, C) - masked NIR 特征
+            TI_enhanced: (B, N, C) - masked TIR 特征
+            RGB_mask: (B, N) - RGB 决策矩阵
+            NI_mask: (B, N) - NIR 决策矩阵
+            TI_mask: (B, N) - TIR 决策矩阵
         """
 
-        # ==================== RGB ====================
-        rgb_self_attn = self._compute_self_attention(RGB_cash, RGB_global)
-        rgb_nir_cross = self._compute_cross_attention(RGB_cash, NI_global)
-        rgb_tir_cross = self._compute_cross_attention(RGB_cash, TI_global)
+        # ==================== RGB 模态 ====================
+        # Step 1: 计算余弦相似度（baseline）
+        rgb_cos_self = self._compute_cosine_similarity(RGB_cash, RGB_global)  # (B, N)
+        rgb_cos_nir = self._compute_cosine_similarity(RGB_cash, NI_global)    # (B, N)
+        rgb_cos_tir = self._compute_cosine_similarity(RGB_cash, TI_global)    # (B, N)
 
-        rgb_select, rgb_extra, rgb_mask = self.rgb_sparse(
+        # Step 2: 计算 Cross-Attention（带余弦门控）
+        if self.use_cross_attn:
+            rgb_self_attn = self.rgb_self_attn(RGB_cash, RGB_global, rgb_cos_self)
+            rgb_nir_cross = self.rgb_cross_nir(RGB_cash, NI_global, rgb_cos_nir)
+            rgb_tir_cross = self.rgb_cross_tir(RGB_cash, TI_global, rgb_cos_tir)
+        else:
+            # 仅使用余弦相似度
+            rgb_self_attn = rgb_cos_self
+            rgb_nir_cross = rgb_cos_nir
+            rgb_tir_cross = rgb_cos_tir
+
+        # Step 3: Token Masking
+        RGB_enhanced, rgb_mask = self.rgb_sparse(
             tokens=RGB_cash,
             self_attention=rgb_self_attn,
             cross_attention_m2=rgb_nir_cross,
             cross_attention_m3=rgb_tir_cross,
-            beta=self.beta,
-        )
+        )  # (B, N, C), (B, N)
 
-        RGB_enhanced = torch.cat([rgb_select, rgb_extra], dim=1)
+        # ==================== NIR 模态 ====================
+        nir_cos_self = self._compute_cosine_similarity(NI_cash, NI_global)
+        nir_cos_rgb = self._compute_cosine_similarity(NI_cash, RGB_global)
+        nir_cos_tir = self._compute_cosine_similarity(NI_cash, TI_global)
 
-        # ==================== NIR ====================
-        nir_self_attn = self._compute_self_attention(NI_cash, NI_global)
-        nir_rgb_cross = self._compute_cross_attention(NI_cash, RGB_global)
-        nir_tir_cross = self._compute_cross_attention(NI_cash, TI_global)
+        if self.use_cross_attn:
+            nir_self_attn = self.nir_self_attn(NI_cash, NI_global, nir_cos_self)
+            nir_rgb_cross = self.nir_cross_rgb(NI_cash, RGB_global, nir_cos_rgb)
+            nir_tir_cross = self.nir_cross_tir(NI_cash, TI_global, nir_cos_tir)
+        else:
+            nir_self_attn = nir_cos_self
+            nir_rgb_cross = nir_cos_rgb
+            nir_tir_cross = nir_cos_tir
 
-        nir_select, nir_extra, nir_mask = self.nir_sparse(
+        NI_enhanced, nir_mask = self.nir_sparse(
             tokens=NI_cash,
             self_attention=nir_self_attn,
             cross_attention_m2=nir_rgb_cross,
             cross_attention_m3=nir_tir_cross,
-            beta=self.beta,
-        )
+        )  # (B, N, C), (B, N)
 
-        NI_enhanced = torch.cat([nir_select, nir_extra], dim=1)
+        # ==================== TIR 模态 ====================
+        tir_cos_self = self._compute_cosine_similarity(TI_cash, TI_global)
+        tir_cos_rgb = self._compute_cosine_similarity(TI_cash, RGB_global)
+        tir_cos_nir = self._compute_cosine_similarity(TI_cash, NI_global)
 
-        # ==================== TIR ====================
-        tir_self_attn = self._compute_self_attention(TI_cash, TI_global)
-        tir_rgb_cross = self._compute_cross_attention(TI_cash, RGB_global)
-        tir_nir_cross = self._compute_cross_attention(TI_cash, NI_global)
+        if self.use_cross_attn:
+            tir_self_attn = self.tir_self_attn(TI_cash, TI_global, tir_cos_self)
+            tir_rgb_cross = self.tir_cross_rgb(TI_cash, RGB_global, tir_cos_rgb)
+            tir_nir_cross = self.tir_cross_nir(TI_cash, NI_global, tir_cos_nir)
+        else:
+            tir_self_attn = tir_cos_self
+            tir_rgb_cross = tir_cos_rgb
+            tir_nir_cross = tir_cos_nir
 
-        tir_select, tir_extra, tir_mask = self.tir_sparse(
+        TI_enhanced, tir_mask = self.tir_sparse(
             tokens=TI_cash,
             self_attention=tir_self_attn,
             cross_attention_m2=tir_rgb_cross,
             cross_attention_m3=tir_nir_cross,
-            beta=self.beta,
-        )
-
-        TI_enhanced = torch.cat([tir_select, tir_extra], dim=1)
+        )  # (B, N, C), (B, N)
 
         return RGB_enhanced, NI_enhanced, TI_enhanced, rgb_mask, nir_mask, tir_mask
