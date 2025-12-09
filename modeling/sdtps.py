@@ -80,10 +80,17 @@ class CrossModalAttention(nn.Module):
 
         self.attn_drop = nn.Dropout(attn_drop)
 
-        # 逐 head 余弦门控：可学习的 scale 和 bias
-        # shape: (num_heads, 1, 1) 用于广播到 (B, num_heads, N)
-        self.gate_scale = nn.Parameter(torch.ones(num_heads, 1, 1))
-        self.gate_bias = nn.Parameter(torch.zeros(num_heads, 1, 1))
+        # ========== 专家建议：用线性层替代单独的 scale/bias 参数 ==========
+        # 旧版（标量参数，表达力有限）：
+        # self.gate_scale = nn.Parameter(torch.ones(num_heads, 1, 1))
+        # self.gate_bias = nn.Parameter(torch.zeros(num_heads, 1, 1))
+        # 使用：gate_logits = cosine * scale + bias
+
+        # 新版（线性层，更模块化和可扩展）：
+        # 从标量余弦相似度 (1维) 映射到 num_heads 个门控 logits
+        self.gate_linear = nn.Linear(1, num_heads, bias=True)
+        # 参数量相同：num_heads个weight + num_heads个bias = 2×num_heads
+        # 优势：标准PyTorch接口，易于扩展为MLP，支持正则化
 
         # 可选：LayerNorm 用于稳定逐 head 的尺度
         self.use_gate_norm = use_gate_norm
@@ -101,17 +108,18 @@ class CrossModalAttention(nn.Module):
         if self.k_proj.bias is not None:
             nn.init.zeros_(self.k_proj.bias)
 
-        # ========== 修复2：调整初始化策略，提升区分度 ==========
-        # 旧版（过于保守，动态范围仅0.11）：
-        # nn.init.constant_(self.gate_scale, 0.5)
-        # nn.init.constant_(self.gate_bias, 0.5)
-        # 初始效果：sigmoid(0.5 * cosine + 0.5) ≈ [0.62, 0.73]
+        # ========== 专家建议：线性层初始化，对齐旧版的 scale=1.0, bias=0.0 ==========
+        # 旧版初始化：
+        # nn.init.constant_(self.gate_scale, 1.0)
+        # nn.init.constant_(self.gate_bias, 0.0)
 
-        # 新版（更中性，动态范围0.46）：
-        nn.init.constant_(self.gate_scale, 1.0)  # 从 0.5 改为 1.0
-        nn.init.constant_(self.gate_bias, 0.0)   # 从 0.5 改为 0.0
-        # 初始效果：sigmoid(1.0 * cosine + 0.0) ≈ [0.27, 0.73]（当 cosine ∈ [-1, 1]）
-        # 动态范围更大，允许模型学习更强的门控效果
+        # 新版线性层初始化：
+        # gate_linear.weight: (num_heads, 1) - 每个 head 有一个 weight
+        # gate_linear.bias: (num_heads,) - 每个 head 有一个 bias
+        nn.init.constant_(self.gate_linear.weight, 1.0)  # 对应 scale=1.0
+        nn.init.constant_(self.gate_linear.bias, 0.0)    # 对应 bias=0.0
+        # 效果：gate_logits = cosine * 1.0 + 0.0 = cosine
+        # 初始 gate = sigmoid(cosine) ≈ [0.27, 0.73]（动态范围 0.46）
 
     def forward(
         self,
@@ -178,19 +186,26 @@ class CrossModalAttention(nn.Module):
         #     cosine_proj = cosine_sim.unsqueeze(1)  # (B, 1, N)
         #     cosine_proj = cosine_proj.expand(-1, self.num_heads, -1)  # (B, num_heads, N)
 
-        # 逐 head 仿射变换：每个 head 有独立的 scale 和 bias
-        # self.gate_scale: (num_heads, 1, 1) → view → (1, num_heads, 1)
-        gate_scale_broadcast = self.gate_scale.view(1, self.num_heads, 1)  # (1, num_heads, 1)
-        gate_bias_broadcast = self.gate_bias.view(1, self.num_heads, 1)    # (1, num_heads, 1)
+        # ========== 专家建议：用线性层生成逐 head 门控 logits ==========
+        # 旧版（标量参数仿射变换）：
+        # gate_scale_broadcast = self.gate_scale.view(1, self.num_heads, 1)
+        # gate_bias_broadcast = self.gate_bias.view(1, self.num_heads, 1)
+        # gate_logits = cosine_proj * gate_scale_broadcast + gate_bias_broadcast
 
-        gate_logits = cosine_proj * gate_scale_broadcast + gate_bias_broadcast  # (B, num_heads, N)
+        # 新版（线性层变换，更模块化）：
+        # cosine_sim: (B, N) → (B, N, 1)
+        cosine_for_gate = cosine_sim.unsqueeze(-1)  # (B, N, 1)
+        # Linear(1, num_heads): (B, N, 1) → (B, N, num_heads)
+        gate_logits = self.gate_linear(cosine_for_gate)  # (B, N, num_heads)
+        # Transpose to (B, num_heads, N) for consistency
+        gate_logits = gate_logits.transpose(1, 2)  # (B, num_heads, N)
 
         # 可选：LayerNorm 稳定逐 head 尺度（当 N 可变时推荐）
         if self.use_gate_norm:
             # gate_logits: (B, num_heads, N) → permute → (B, N, num_heads)
-            gate_logits = gate_logits.permute(0, 2, 1)  # (B, N, num_heads)
+            gate_logits = gate_logits.transpose(1, 2)  # (B, N, num_heads)
             gate_logits = self.gate_norm(gate_logits)   # LayerNorm on num_heads 维度
-            gate_logits = gate_logits.permute(0, 2, 1)  # (B, num_heads, N)
+            gate_logits = gate_logits.transpose(1, 2)  # (B, num_heads, N)
 
         # Sigmoid 门控到 [0, 1]
         gate = torch.sigmoid(gate_logits)  # (B, num_heads, N)
