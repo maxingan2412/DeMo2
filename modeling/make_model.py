@@ -217,7 +217,7 @@ class DeMo(nn.Module):
         del model, input
         return sum(Gflops.values()) * 1e9
 
-def forward(self, x, label=None, cam_label=None, view_label=None, return_pattern=3, img_path=None):
+    def forward(self, x, label=None, cam_label=None, view_label=None, return_pattern=3, img_path=None):
         # ==========================================================
         # 1. Input Preparation & Missing Modality Simulation (Eval)
         # ==========================================================
@@ -267,7 +267,7 @@ def forward(self, x, label=None, cam_label=None, view_label=None, return_pattern
             # 2. Resize to patch grid
             patch_h = self.image_size[0] // self.cfg.MODEL.STRIDE_SIZE[0]
             patch_w = self.image_size[1] // self.cfg.MODEL.STRIDE_SIZE[1]
-            
+
             q_rgb_patch = F.interpolate(q_rgb, size=(patch_h, patch_w), mode='bilinear')
             q_nir_patch = F.interpolate(q_nir, size=(patch_h, patch_w), mode='bilinear')
             q_tir_patch = F.interpolate(q_tir, size=(patch_h, patch_w), mode='bilinear')
@@ -299,7 +299,7 @@ def forward(self, x, label=None, cam_label=None, view_label=None, return_pattern
             return reduce_layer(torch.cat([feat_global, feat_local], dim=-1))
 
         # --- Logic Branching ---
-        
+
         # A. SDTPS Path
         if self.USE_SDTPS:
             # Token Selection
@@ -310,9 +310,9 @@ def forward(self, x, label=None, cam_label=None, view_label=None, return_pattern
             RGB_final = fuse_global_local(RGB_enh, RGB_global, self.pool, self.rgb_reduce)
             NI_final  = fuse_global_local(NI_enh, NI_global, self.pool, self.nir_reduce)
             TI_final  = fuse_global_local(TI_enh, TI_global, self.pool, self.tir_reduce)
-            
+
             sdtps_feat = torch.cat([RGB_final, NI_final, TI_final], dim=-1)
-            
+
             if self.training:
                 sdtps_score = self.classifier_sdtps(self.bottleneck_sdtps(sdtps_feat))
 
@@ -327,7 +327,7 @@ def forward(self, x, label=None, cam_label=None, view_label=None, return_pattern
                     # If SDTPS ran, reuse its fused features
                     if self.DGAF_VERSION == 'v3': raise ValueError("SDTPS + DGAF requires V1")
                     if not self.GLOBAL_LOCAL: raise ValueError("SDTPS + DGAF V1 requires GLOBAL_LOCAL")
-                    
+
                     # RGB_final calculated in SDTPS block above
                     dgaf_feat = self.dgaf(RGB_final, NI_final, TI_final)
                 else:
@@ -338,7 +338,7 @@ def forward(self, x, label=None, cam_label=None, view_label=None, return_pattern
                         t_in = fuse_global_local(TI_cash, TI_global, self.pool, self.tir_reduce)
                     else:
                         r_in, n_in, t_in = RGB_global, NI_global, TI_global
-                    
+
                     dgaf_feat = self.dgaf(r_in, n_in, t_in)
 
             if self.training:
@@ -348,7 +348,7 @@ def forward(self, x, label=None, cam_label=None, view_label=None, return_pattern
         # Always compute 'ori' for fallback or auxiliary returns
         ori = torch.cat([RGB_global, NI_global, TI_global], dim=-1)
         ori_score = None
-        
+
         # Calculate scores if needed (Standard Baseline or Separate Heads)
         if self.training:
             if self.direct:
@@ -364,11 +364,11 @@ def forward(self, x, label=None, cam_label=None, view_label=None, return_pattern
         # ==========================================================
         # 6. Return Logic
         # ==========================================================
-        
+
         # --- Training Return ---
         if self.training:
             result = ()
-            
+
             # Priority 1: SDTPS + DGAF
             if self.USE_SDTPS and self.USE_DGAF:
                 result = (sdtps_score, sdtps_feat, dgaf_score, dgaf_feat)
@@ -394,7 +394,7 @@ def forward(self, x, label=None, cam_label=None, view_label=None, return_pattern
             # Append LIF loss if it exists
             if self.USE_LIF and lif_loss is not None:
                 result = result + (lif_loss,)
-            
+
             return result
 
         # --- Inference Return ---
