@@ -6,7 +6,7 @@ SDTPS: Sparse and Dense Token-Aware Patch Selection for Multi-Modal ReID
 - 原始：使用 图像自注意力 + 稀疏文本 + 稠密文本 生成 score
 - 新版：使用 图像自注意力 + 其他两个模态的全局特征 生成 score
 - 应用场景：RGB/NIR/TIR 三模态重识别
-- 引入 Cross-Attention 机制，用余弦相似度作为门控
+- 引入 Cross-Attention 机制，用逐 head 余弦门控
 """
 
 import math
@@ -18,30 +18,32 @@ from typing import Optional, Tuple
 
 class CrossModalAttention(nn.Module):
     """
-    Cross-Attention 模块（带余弦相似度逐元素门控）
+    Cross-Attention 模块（带逐 head 余弦门控）
 
-    核心改动：
+    核心设计：
     1. Q/K 反向：global 作为 Query，patches 作为 Key
-       - 让 patches 去检索 global，看哪些 patch 对 global 重要
-    2. 余弦相似度门控：通过轻量级 MLP 学习逐 patch 的门控权重
-    3. 在 N（patch）维度做 softmax
-    4. 逐元素点乘：attn * gated_cosine（而非线性组合）
+    2. 逐 head 余弦门控：每个 head 学习独立的 scale 和 bias
+    3. 在多头平均前进行门控，保留多头差异性
+    4. 在 N（patch）维度做 softmax
 
     计算流程：
     1. 余弦相似度：cos_sim = normalize(patches) @ normalize(global)^T  # (B, N)
-    2. Q/K 投影：
-       Q = W_q @ global      # (B, 1, C) -> (B, 1, C)
-       K = W_k @ patches     # (B, N, C) -> (B, N, C)
-    3. Attention：
-       attn = softmax(Q @ K^T / sqrt(d), dim=N)  # (B, num_heads, 1, N)
-    4. 余弦门控：
-       gated_cosine = MLP(cosine_sim)  # (B, N) → (B, N)，逐 patch 学习
-       score = attn * gated_cosine  # 逐元素点乘
+    2. Q/K 投影 + Attention：
+       Q = W_q @ global, K = W_k @ patches
+       attn = softmax(Q @ K^T / sqrt(d), dim=N)  # (B, num_heads, N)
+    3. 逐 head 余弦门控：
+       gate = sigmoid(cosine * scale[h] + bias[h])  # (B, num_heads, N)
+       每个 head 有独立的 scale 和 bias
+    4. 门控注意力：
+       attn_gated = attn * gate  # 逐元素点乘
+    5. 多头平均：
+       score = mean(attn_gated, dim=heads)  # (B, N)
 
     优势：
-    - 逐 patch 自适应门控（而非全局标量）
-    - 余弦相似度作为"置信度"调节注意力
-    - 非线性交互，表达能力更强
+    - 参数极少：num_heads × 2 个参数（如 4 heads = 8 params）
+    - 逐 head 自适应：每个 head 学习不同的门控策略
+    - 物理意义清晰：scale 控制温度，bias 控制偏置
+    - 简洁高效：不需要额外的 MLP 或 LayerNorm
     """
 
     def __init__(
@@ -50,7 +52,6 @@ class CrossModalAttention(nn.Module):
         num_heads: int = 4,
         qkv_bias: bool = True,
         attn_drop: float = 0.0,
-        gate_hidden_dim: int = 32,  # 门控 MLP 的隐藏层维度
     ):
         super().__init__()
 
@@ -65,13 +66,10 @@ class CrossModalAttention(nn.Module):
 
         self.attn_drop = nn.Dropout(attn_drop)
 
-        # 余弦相似度门控：轻量级 MLP，逐 patch 学习门控权重
-        self.cosine_gate = nn.Sequential(
-            nn.Linear(1, gate_hidden_dim),
-            nn.GELU(),
-            nn.Linear(gate_hidden_dim, 1),
-            nn.Sigmoid(),  # 输出 [0, 1]，作为置信度/质量分数
-        )
+        # 逐 head 余弦门控：可学习的 scale 和 bias
+        # shape: (num_heads, 1, 1) 用于广播到 (B, num_heads, N)
+        self.gate_scale = nn.Parameter(torch.ones(num_heads, 1, 1))
+        self.gate_bias = nn.Parameter(torch.zeros(num_heads, 1, 1))
 
         self._init_weights()
 
@@ -84,13 +82,11 @@ class CrossModalAttention(nn.Module):
         if self.k_proj.bias is not None:
             nn.init.zeros_(self.k_proj.bias)
 
-        # 初始化门控网络：使其初始时接近恒等映射
-        # 让 sigmoid(Linear(x)) ≈ x（当 x ∈ [0, 1] 时）
-        for m in self.cosine_gate.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight, gain=0.1)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
+        # gate_scale 初始化为 1.0，gate_bias 初始化为 0.0
+        # 使得初始时 sigmoid(1.0 * cosine + 0.0) ≈ sigmoid(cosine)
+        # 即初始时门控接近余弦相似度本身
+        nn.init.ones_(self.gate_scale)
+        nn.init.zeros_(self.gate_bias)
 
     def forward(
         self,
@@ -99,12 +95,12 @@ class CrossModalAttention(nn.Module):
         cosine_sim: torch.Tensor,    # (B, N) - 预计算的余弦相似度
     ) -> torch.Tensor:
         """
-        计算 Cross-Attention score（带余弦相似度逐元素门控）
+        计算 Cross-Attention score（带逐 head 余弦门控）
 
         Args:
             patches: (B, N, C) - patch tokens 作为 Key（被检索）
             global_feat: (B, C) or (B, 1, C) - global feature 作为 Query（检索者）
-            cosine_sim: (B, N) - 预计算的余弦相似度，用于逐 patch 门控
+            cosine_sim: (B, N) - 预计算的余弦相似度，用于门控
 
         Returns:
             score: (B, N) - 每个 patch 的重要性得分
@@ -114,6 +110,7 @@ class CrossModalAttention(nn.Module):
         if global_feat.dim() == 2:
             global_feat = global_feat.unsqueeze(1)  # (B, C) -> (B, 1, C)
 
+        # ========== Step 1: Q/K 投影 ==========
         # Q 投影: global 作为查询
         q = self.q_proj(global_feat)  # (B, 1, C)
         q = q.reshape(B, 1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
@@ -124,28 +121,41 @@ class CrossModalAttention(nn.Module):
         k = k.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         # (B, num_heads, N, head_dim)
 
-        # Attention score: Q @ K^T / sqrt(d)
+        # ========== Step 2: Attention Score ==========
+        # Q @ K^T / sqrt(d)
         # q: (B, num_heads, 1, head_dim) @ k^T: (B, num_heads, head_dim, N)
         # = (B, num_heads, 1, N)
         attn = (q @ k.transpose(-2, -1)) * self.scale  # (B, num_heads, 1, N)
 
         # 在 N（patch）维度做 softmax
-        attn = attn.softmax(dim=-1)  # (B, num_heads, 1, N) - 在最后一维（N）做 softmax
+        attn = attn.softmax(dim=-1)  # (B, num_heads, 1, N)
         attn = attn.squeeze(2)  # (B, num_heads, N)
 
         # 可选：应用 dropout（训练时）
         attn = self.attn_drop(attn)
 
-        # 多头平均
-        attn = attn.mean(dim=1)  # (B, N)
+        # ========== Step 3: 逐 head 余弦门控 ==========
+        # cosine_sim: (B, N) → (B, 1, N) 用于广播到 (B, num_heads, N)
+        cosine_expanded = cosine_sim.unsqueeze(1)  # (B, 1, N)
 
-        # 余弦相似度门控：逐 patch 学习门控权重
-        # cosine_sim: (B, N) → (B, N, 1) → MLP → (B, N, 1) → (B, N)
-        gated_cosine = self.cosine_gate(cosine_sim.unsqueeze(-1)).squeeze(-1)  # (B, N)
+        # 逐 head 仿射变换：每个 head 有独立的 scale 和 bias
+        # self.gate_scale: (num_heads, 1, 1) → view → (1, num_heads, 1)
+        # cosine_expanded: (B, 1, N)
+        # 广播规则：(B, 1, N) * (1, num_heads, 1) → (B, num_heads, N)
+        gate_scale_broadcast = self.gate_scale.view(1, self.num_heads, 1)  # (1, num_heads, 1)
+        gate_bias_broadcast = self.gate_bias.view(1, self.num_heads, 1)    # (1, num_heads, 1)
 
-        # 逐元素点乘：注意力 * 门控的余弦相似度
-        # 语义：余弦相似度作为"置信度"，调节注意力分数
-        score = attn * gated_cosine  # (B, N) * (B, N) → (B, N)
+        gate_logits = cosine_expanded * gate_scale_broadcast + gate_bias_broadcast  # (B, num_heads, N)
+
+        # Sigmoid 门控到 [0, 1]
+        gate = torch.sigmoid(gate_logits)  # (B, num_heads, N)
+
+        # ========== Step 4: 门控注意力（在多头平均前） ==========
+        # 逐 head 逐 patch 门控
+        attn_gated = attn * gate  # (B, num_heads, N) * (B, num_heads, N)
+
+        # ========== Step 5: 多头平均 ==========
+        score = attn_gated.mean(dim=1)  # (B, N)
 
         return score
 
@@ -247,7 +257,7 @@ class TokenSparse(nn.Module):
 
 class MultiModalSDTPS(nn.Module):
     """
-    多模态 SDTPS 模块 - 带 Cross-Attention 和余弦相似度门控
+    多模态 SDTPS 模块 - 带 Cross-Attention 和逐 head 余弦门控
 
     功能：
         1. 对每个模态的 patch 特征进行稀疏选择（soft masking）
@@ -258,21 +268,21 @@ class MultiModalSDTPS(nn.Module):
     改动说明：
         - 同时使用余弦相似度和 Cross-Attention（不再二选一）
         - Q/K 反向：global 作为 Query，patches 作为 Key
-        - 余弦相似度作为门控，加权注意力分数
+        - 逐 head 余弦门控：scale 和 bias
         - 在 patch 维度（N）做 softmax
 
     流程（以 RGB 为例）：
         1. 计算余弦相似度：
-           cos_self = cosine(RGB_patches, RGB_global)
-           cos_nir = cosine(RGB_patches, NIR_global)
-           cos_tir = cosine(RGB_patches, TIR_global)
+           cos_sim = cosine(RGB_patches, RGB_global)  # (B, N)
 
-        2. 计算 Cross-Attention（带余弦门控）：
-           attn_self = CrossAttn(RGB_patches, RGB_global, cos_self)
-           attn_nir = CrossAttn(RGB_patches, NIR_global, cos_nir)
-           attn_tir = CrossAttn(RGB_patches, TIR_global, cos_tir)
+        2. 计算 Cross-Attention：
+           attn = CrossAttn(RGB_patches, RGB_global)  # (B, num_heads, N)
 
-        3. 综合 score → Top-K mask → 置零未选中的 tokens
+        3. 逐 head 门控：
+           gate = sigmoid(cos_sim * scale[h] + bias[h])  # (B, num_heads, N)
+           attn_gated = attn * gate
+
+        4. 多头平均 + masking
 
     Args:
         embed_dim: 特征维度
@@ -408,7 +418,7 @@ class MultiModalSDTPS(nn.Module):
         rgb_cos_nir = self._compute_cosine_similarity(RGB_cash, NI_global)    # (B, N)
         rgb_cos_tir = self._compute_cosine_similarity(RGB_cash, TI_global)    # (B, N)
 
-        # Step 2: 计算 Cross-Attention（带余弦门控）
+        # Step 2: 计算 Cross-Attention（带逐 head 余弦门控）
         if self.use_cross_attn:
             rgb_self_attn = self.rgb_self_attn(RGB_cash, RGB_global, rgb_cos_self)
             rgb_nir_cross = self.rgb_cross_nir(RGB_cash, NI_global, rgb_cos_nir)
