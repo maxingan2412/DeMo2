@@ -329,10 +329,30 @@ class DeMo(nn.Module):
 
                 sdtps_score = self.classifier_sdtps(self.bottleneck_sdtps(sdtps_feat))
 
-            # 单独使用 DGAF V3（不依赖 SDTPS）：直接处理 backbone 的 patch tokens
+            # 单独使用 DGAF（不依赖 SDTPS）：直接处理 backbone 的 patch tokens
             elif self.USE_DGAF:
-                # DGAF V3 直接接受 patch tokens (B, N, C)
-                dgaf_feat = self.dgaf(RGB_cash, NI_cash, TI_cash)  # (B, 3C)
+                if self.DGAF_VERSION == 'v3':
+                    # V3: 直接接受 patch tokens (B, N, C)
+                    dgaf_feat = self.dgaf(RGB_cash, NI_cash, TI_cash)  # (B, 3C)
+                else:
+                    # V1 及其他版本: 需要先聚合成 (B, C)
+                    if self.GLOBAL_LOCAL:
+                        # GLOBAL_LOCAL 模式：pool(cash) + backbone_global 融合降维
+                        RGB_local = self.pool(RGB_cash.permute(0, 2, 1)).squeeze(-1)  # (B, C)
+                        NI_local = self.pool(NI_cash.permute(0, 2, 1)).squeeze(-1)    # (B, C)
+                        TI_local = self.pool(TI_cash.permute(0, 2, 1)).squeeze(-1)    # (B, C)
+
+                        RGB_dgaf = self.rgb_reduce(torch.cat([RGB_global, RGB_local], dim=-1))  # (B, C)
+                        NI_dgaf = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))     # (B, C)
+                        TI_dgaf = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))     # (B, C)
+                    else:
+                        # 默认方式：仅使用 global 特征
+                        RGB_dgaf = RGB_global
+                        NI_dgaf = NI_global
+                        TI_dgaf = TI_global
+
+                    dgaf_feat = self.dgaf(RGB_dgaf, NI_dgaf, TI_dgaf)  # (B, 3C)
+
                 dgaf_score = self.classifier_dgaf(self.bottleneck_dgaf(dgaf_feat))
 
             if self.HDM or self.ATM:
@@ -522,10 +542,30 @@ class DeMo(nn.Module):
                 elif return_pattern == 3:
                     return torch.cat([ori, sdtps_feat], dim=-1)
 
-            # 单独使用 DGAF V3（不依赖 SDTPS）：直接处理 backbone 的 patch tokens
+            # 单独使用 DGAF（不依赖 SDTPS）：直接处理 backbone 的 patch tokens
             elif self.USE_DGAF:
-                # DGAF V3 直接接受 patch tokens (B, N, C)
-                dgaf_feat = self.dgaf(RGB_cash, NI_cash, TI_cash)  # (B, 3C)
+                if self.DGAF_VERSION == 'v3':
+                    # V3: 直接接受 patch tokens (B, N, C)
+                    dgaf_feat = self.dgaf(RGB_cash, NI_cash, TI_cash)  # (B, 3C)
+                else:
+                    # V1 及其他版本: 需要先聚合成 (B, C)
+                    if self.GLOBAL_LOCAL:
+                        # GLOBAL_LOCAL 模式：pool(cash) + backbone_global 融合降维
+                        RGB_local = self.pool(RGB_cash.permute(0, 2, 1)).squeeze(-1)  # (B, C)
+                        NI_local = self.pool(NI_cash.permute(0, 2, 1)).squeeze(-1)    # (B, C)
+                        TI_local = self.pool(TI_cash.permute(0, 2, 1)).squeeze(-1)    # (B, C)
+
+                        RGB_dgaf = self.rgb_reduce(torch.cat([RGB_global, RGB_local], dim=-1))  # (B, C)
+                        NI_dgaf = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))     # (B, C)
+                        TI_dgaf = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))     # (B, C)
+                    else:
+                        # 默认方式：仅使用 global 特征
+                        RGB_dgaf = RGB_global
+                        NI_dgaf = NI_global
+                        TI_dgaf = TI_global
+
+                    dgaf_feat = self.dgaf(RGB_dgaf, NI_dgaf, TI_dgaf)  # (B, 3C)
+
                 if return_pattern == 1:
                     return ori
                 elif return_pattern == 2:
