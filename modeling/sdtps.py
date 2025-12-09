@@ -65,7 +65,6 @@ class CrossModalAttention(nn.Module):
         attn_drop: float = 0.0,
         use_gate_norm: bool = False,  # 是否在 gate 前使用 LayerNorm
         renormalize_attn: bool = False,  # 是否在门控后重新归一化注意力
-        gate_hidden_dim: int = 8,  # 门控 MLP 的隐藏层维度
     ):
         super().__init__()
 
@@ -81,26 +80,18 @@ class CrossModalAttention(nn.Module):
 
         self.attn_drop = nn.Dropout(attn_drop)
 
-        # ========== 专家建议：用 MLP 替代简单仿射，增强门控表达力 ==========
-        # 旧版1（最初的标量参数）：
+        # ========== 专家建议：用 Conv1d 替代手动 broadcast，代码简洁 ==========
+        # 旧版（手动 expand + broadcast，代码冗长）：
         # self.gate_scale = nn.Parameter(torch.ones(num_heads, 1, 1))
         # self.gate_bias = nn.Parameter(torch.zeros(num_heads, 1, 1))
-        # 表达力：仅线性仿射 gate = sigmoid(cosine * scale + bias)
+        # 使用时需要：expand, view, broadcast... 9行代码
 
-        # 旧版2（我之前的理解，只是封装）：
-        # self.gate_linear = nn.Linear(1, num_heads, bias=True)
-        # 表达力：与旧版1完全相同，只是换了写法
-
-        # 新版（专家真实意图：用 MLP 做非线性映射）：
-        # 从标量余弦 → 隐藏层 → 多头 logits，增加表达力和灵活性
-        self.gate_mlp = nn.Sequential(
-            nn.Linear(1, gate_hidden_dim, bias=True),  # 扩展到隐藏维度
-            nn.GELU(),  # 非线性激活
-            nn.Linear(gate_hidden_dim, num_heads, bias=True)  # 映射到各 head
-        )
-        # 参数量：(1×hidden + hidden) + (hidden×num_heads + num_heads)
-        # 例如 hidden=8, heads=4: (8+8) + (32+4) = 52 参数（vs 旧版 8 参数）
-        # 优势：非线性映射，可学习复杂的门控策略
+        # 新版（专家建议：直接 Conv1d，简洁）：
+        # Conv1d(1, num_heads, kernel_size=1): (B, 1, N) → (B, num_heads, N)
+        # kernel_size=1: 逐位置独立变换（等价于 Linear，但更适合序列数据）
+        self.gate_conv = nn.Conv1d(1, num_heads, kernel_size=1, bias=True)
+        # 参数量：num_heads × 1 × 1 + num_heads = 2×num_heads（与旧版相同）
+        # 使用：仅需 1 行！gate_logits = self.gate_conv(cosine_expanded)
 
         # 可选：LayerNorm 用于稳定逐 head 的尺度
         self.use_gate_norm = use_gate_norm
@@ -118,17 +109,12 @@ class CrossModalAttention(nn.Module):
         if self.k_proj.bias is not None:
             nn.init.zeros_(self.k_proj.bias)
 
-        # ========== 专家建议：MLP 门控的初始化策略 ==========
-        # 使用小权重初始化，避免训练初期门控过于激进
-        # 第一层：Linear(1, hidden)
-        nn.init.xavier_uniform_(self.gate_mlp[0].weight, gain=0.5)  # 较小的 gain
-        nn.init.zeros_(self.gate_mlp[0].bias)
-
-        # 第二层：Linear(hidden, num_heads)
-        nn.init.xavier_uniform_(self.gate_mlp[2].weight, gain=0.5)  # 较小的 gain
-        nn.init.zeros_(self.gate_mlp[2].bias)
-        # 效果：初始 MLP 输出接近 0，gate = sigmoid(~0) ≈ 0.5（中性门控）
-        # 随训练逐渐学习更强的门控策略
+        # ========== Conv1d 门控初始化（scale=1.0, bias=0.0）==========
+        # gate_conv.weight: (num_heads, 1, 1)
+        # gate_conv.bias: (num_heads,)
+        nn.init.constant_(self.gate_conv.weight, 1.0)  # 初始 scale=1.0
+        nn.init.constant_(self.gate_conv.bias, 0.0)    # 初始 bias=0.0
+        # 效果：gate = sigmoid(cosine) ≈ [0.27, 0.73]
 
     def forward(
         self,
@@ -177,48 +163,18 @@ class CrossModalAttention(nn.Module):
         attn = self.attn_drop(attn)
 
         # ========== Step 3: 逐 head 余弦门控 ==========
-        # 回退：使用原始空间余弦（训练更稳定、物理意义清晰，各 head 共享同一余弦先验）
-        cosine_expanded = cosine_sim.unsqueeze(1)  # (B, 1, N)
-        cosine_proj = cosine_expanded.expand(-1, self.num_heads, -1)  # (B, num_heads, N)
-
-        # 保留投影空间余弦的实现（当前停用，避免门控与 attn 过度耦合导致初期不稳）
-        # 投影空间版本：在 Q/K 投影后的特征空间计算余弦，与 attention 对齐
-        # if cosine_sim is None:
-        #     # 在投影后的 Q/K 空间计算余弦相似度
-        #     # q: (B, num_heads, 1, head_dim), k: (B, num_heads, N, head_dim)
-        #     q_norm = F.normalize(q, dim=-1)  # (B, num_heads, 1, head_dim)
-        #     k_norm = F.normalize(k, dim=-1)  # (B, num_heads, N, head_dim)
-        #     # 余弦相似度：(B, num_heads, 1, head_dim) @ (B, num_heads, head_dim, N)
-        #     cosine_proj = (q_norm @ k_norm.transpose(-2, -1)).squeeze(2)  # (B, num_heads, N)
-        # else:
-        #     # 使用预计算的余弦（原始特征空间）
-        #     cosine_proj = cosine_sim.unsqueeze(1)  # (B, 1, N)
-        #     cosine_proj = cosine_proj.expand(-1, self.num_heads, -1)  # (B, num_heads, N)
-
-        # ========== 专家建议：用 MLP 生成逐 head 门控 logits（非线性映射）==========
-        # 旧版1（标量参数仿射）：
+        # ========== 专家建议：直接用 Conv1d，简洁高效 ==========
+        # 旧版（手动 expand + broadcast，代码冗长）：
+        # cosine_expanded = cosine_sim.unsqueeze(1)  # (B, 1, N)
+        # cosine_proj = cosine_expanded.expand(-1, self.num_heads, -1)  # (B, num_heads, N)
         # gate_scale_broadcast = self.gate_scale.view(1, self.num_heads, 1)
         # gate_bias_broadcast = self.gate_bias.view(1, self.num_heads, 1)
         # gate_logits = cosine_proj * gate_scale_broadcast + gate_bias_broadcast
-        # 表达力：线性仿射
 
-        # 旧版2（单层线性封装，本质未变）：
-        # gate_logits = self.gate_linear(cosine_sim.unsqueeze(-1))
-        # 表达力：仍是线性仿射，只是换了写法
-
-        # 新版（专家真实意图：MLP 非线性映射）：
-        # cosine_sim: (B, N) → (B, N, 1)
-        cosine_for_gate = cosine_sim.unsqueeze(-1)  # (B, N, 1)
-        # MLP: (B, N, 1) → (B, N, hidden) → GELU → (B, N, num_heads)
-        gate_logits = self.gate_mlp(cosine_for_gate)  # (B, N, num_heads)
-        # Transpose to (B, num_heads, N) for consistency
-        gate_logits = gate_logits.transpose(1, 2)  # (B, num_heads, N)
-
-        # 优势：
-        # 1. 非线性映射，可学习复杂的门控策略（如非单调门控）
-        # 2. 隐藏层提供更强的表达能力
-        # 3. 参数量适中：(1×8+8) + (8×4+4) = 48 params (vs 旧版 8 params)
-        # 4. 未来可进一步扩展为更深的 MLP
+        # 新版（专家建议：一行搞定）：
+        cosine_expanded = cosine_sim.unsqueeze(1)  # (B, 1, N)
+        gate_logits = self.gate_conv(cosine_expanded)  # (B, num_heads, N)
+        # Conv1d(1→num_heads, kernel=1) 逐位置独立变换，简洁清晰
 
         # 可选：LayerNorm 稳定逐 head 尺度（当 N 可变时推荐）
         if self.use_gate_norm:
