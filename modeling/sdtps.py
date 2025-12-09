@@ -101,20 +101,23 @@ class CrossModalAttention(nn.Module):
         if self.k_proj.bias is not None:
             nn.init.zeros_(self.k_proj.bias)
 
-        # gate_scale 初始化策略：避免训练初期过稀疏
-        # 初始化为较小值（0.5），使得 sigmoid(0.5 * cosine) 更平缓
-        nn.init.constant_(self.gate_scale, 0.5)  # 从 1.0 改为 0.5
+        # ========== 修复2：调整初始化策略，提升区分度 ==========
+        # 旧版（过于保守，动态范围仅0.11）：
+        # nn.init.constant_(self.gate_scale, 0.5)
+        # nn.init.constant_(self.gate_bias, 0.5)
+        # 初始效果：sigmoid(0.5 * cosine + 0.5) ≈ [0.62, 0.73]
 
-        # gate_bias 初始化为正值，避免初期门控值过低
-        nn.init.constant_(self.gate_bias, 0.5)   # 从 0.0 改为 0.5
-        # 初始效果：sigmoid(0.5 * cosine + 0.5) ≈ [0.62, 0.73]（当 cosine ∈ [-1, 1]）
-        # 比 sigmoid(cosine) ≈ [0.27, 0.73] 更保守，避免过度稀疏
+        # 新版（更中性，动态范围0.46）：
+        nn.init.constant_(self.gate_scale, 1.0)  # 从 0.5 改为 1.0
+        nn.init.constant_(self.gate_bias, 0.0)   # 从 0.5 改为 0.0
+        # 初始效果：sigmoid(1.0 * cosine + 0.0) ≈ [0.27, 0.73]（当 cosine ∈ [-1, 1]）
+        # 动态范围更大，允许模型学习更强的门控效果
 
     def forward(
         self,
         patches: torch.Tensor,       # (B, N, C) - 键（被检索）
         global_feat: torch.Tensor,   # (B, C) or (B, 1, C) - 查询（检索者）
-        cosine_sim: torch.Tensor,    # (B, N) - 预计算的余弦相似度
+        cosine_sim: Optional[torch.Tensor] = None,  # (B, N) - 预计算的余弦（可选）
     ) -> torch.Tensor:
         """
         计算 Cross-Attention score（带逐 head 余弦门控）
@@ -122,7 +125,7 @@ class CrossModalAttention(nn.Module):
         Args:
             patches: (B, N, C) - patch tokens 作为 Key（被检索）
             global_feat: (B, C) or (B, 1, C) - global feature 作为 Query（检索者）
-            cosine_sim: (B, N) - 预计算的余弦相似度，用于门控
+            cosine_sim: (B, N) - 预计算的余弦相似度（可选，如为 None 则在投影后计算）
 
         Returns:
             score: (B, N) - 每个 patch 的重要性得分
@@ -157,17 +160,30 @@ class CrossModalAttention(nn.Module):
         attn = self.attn_drop(attn)
 
         # ========== Step 3: 逐 head 余弦门控 ==========
-        # cosine_sim: (B, N) → (B, 1, N) 用于广播到 (B, num_heads, N)
-        cosine_expanded = cosine_sim.unsqueeze(1)  # (B, 1, N)
+        # ========== 修复5+6：统一特征空间，在投影后计算余弦 ==========
+        # 旧版（使用预计算的原始空间余弦，特征空间不一致）：
+        # cosine_expanded = cosine_sim.unsqueeze(1)  # (B, 1, N)
+
+        # 新版（在投影后的特征空间计算余弦，与 attention 对齐）：
+        if cosine_sim is None:
+            # 在投影后的 Q/K 空间计算余弦相似度
+            # q: (B, num_heads, 1, head_dim), k: (B, num_heads, N, head_dim)
+            q_norm = F.normalize(q, dim=-1)  # (B, num_heads, 1, head_dim)
+            k_norm = F.normalize(k, dim=-1)  # (B, num_heads, N, head_dim)
+            # 余弦相似度：(B, num_heads, 1, head_dim) @ (B, num_heads, head_dim, N)
+            cosine_proj = (q_norm @ k_norm.transpose(-2, -1)).squeeze(2)  # (B, num_heads, N)
+        else:
+            # 兼容旧版：使用预计算的余弦（原始特征空间）
+            cosine_proj = cosine_sim.unsqueeze(1)  # (B, 1, N)
+            # 扩展到所有 head（假设各 head 共享同一余弦）
+            cosine_proj = cosine_proj.expand(-1, self.num_heads, -1)  # (B, num_heads, N)
 
         # 逐 head 仿射变换：每个 head 有独立的 scale 和 bias
         # self.gate_scale: (num_heads, 1, 1) → view → (1, num_heads, 1)
-        # cosine_expanded: (B, 1, N)
-        # 广播规则：(B, 1, N) * (1, num_heads, 1) → (B, num_heads, N)
         gate_scale_broadcast = self.gate_scale.view(1, self.num_heads, 1)  # (1, num_heads, 1)
         gate_bias_broadcast = self.gate_bias.view(1, self.num_heads, 1)    # (1, num_heads, 1)
 
-        gate_logits = cosine_expanded * gate_scale_broadcast + gate_bias_broadcast  # (B, num_heads, N)
+        gate_logits = cosine_proj * gate_scale_broadcast + gate_bias_broadcast  # (B, num_heads, N)
 
         # 可选：LayerNorm 稳定逐 head 尺度（当 N 可变时推荐）
         if self.use_gate_norm:
@@ -183,10 +199,16 @@ class CrossModalAttention(nn.Module):
         # 逐 head 逐 patch 门控
         attn_gated = attn * gate  # (B, num_heads, N) * (B, num_heads, N)
 
-        # 可选：重新归一化以保持概率性（attn_gated 和为 1）
-        if self.renormalize_attn:
-            # 在 N 维度重新归一化，确保每个 head 的权重和为 1
-            attn_gated = attn_gated / (attn_gated.sum(dim=-1, keepdim=True) + 1e-8)  # (B, num_heads, N)
+        # ========== 修复1：默认开启重新归一化，保持概率性质 ==========
+        # 旧版（可选归一化，默认关闭）：
+        # if self.renormalize_attn:
+        #     attn_gated = attn_gated / (attn_gated.sum(dim=-1, keepdim=True) + 1e-8)
+
+        # 新版（强制归一化，修复概率性质）：
+        # 在 N 维度重新归一化，确保每个 head 的权重和为 1
+        attn_gated = attn_gated / (attn_gated.sum(dim=-1, keepdim=True) + 1e-8)  # (B, num_heads, N)
+        # 说明：门控后必须归一化，否则 attention 不再是概率分布
+        #       会导致后续 min-max 归一化削弱门控效果
 
         # ========== Step 5: 多头平均 ==========
         score = attn_gated.mean(dim=1)  # (B, N)
@@ -205,14 +227,17 @@ class TokenSparse(nn.Module):
         - 移除 MLP predictor，直接用三个注意力得分的平均
         - 不做 token 提取，用 mask 将未选中的 token 置零
         - 保持输出形状 (B, N, C) 不变，维持空间结构
+        - 添加可学习的模态权重（修复3）
 
-    综合得分公式（简化）：
-        score = (s_im + s_m2 + s_m3) / 3
+    综合得分公式：
+        旧版：score = (s_im + s_m2 + s_m3) / 3
+        新版：score = w1*s_im + w2*s_m2 + w3*s_m3 (w 通过 softmax 归一化)
 
     Args:
         sparse_ratio: 保留比例 (如 0.6 表示保留 60%)
         use_gumbel: 是否使用 Gumbel-Softmax 可微采样
         gumbel_tau: Gumbel 温度参数
+        use_adaptive_weights: 是否使用自适应模态权重（默认 True）
     """
 
     def __init__(
@@ -220,12 +245,19 @@ class TokenSparse(nn.Module):
         sparse_ratio: float = 0.6,
         use_gumbel: bool = False,
         gumbel_tau: float = 1.0,
+        use_adaptive_weights: bool = True,  # 新增：自适应权重
     ):
         super().__init__()
 
         self.sparse_ratio = sparse_ratio
         self.use_gumbel = use_gumbel
         self.gumbel_tau = gumbel_tau
+        self.use_adaptive_weights = use_adaptive_weights
+
+        # ========== 修复3：添加可学习的模态权重 ==========
+        if use_adaptive_weights:
+            # 3 个可学习权重（通过 softmax 归一化为概率）
+            self.modal_weights = nn.Parameter(torch.ones(3))  # 初始化为均等权重
 
     def forward(
         self,
@@ -261,8 +293,19 @@ class TokenSparse(nn.Module):
         s_m2 = normalize_score(cross_attention_m2)     # (B, N) - 模态2
         s_m3 = normalize_score(cross_attention_m3)     # (B, N) - 模态3
 
-        # 简化得分：三个注意力的平均
-        score = (s_im + s_m2 + s_m3) / 3  # (B, N)
+        # ========== 修复3：使用自适应模态权重替代简单平均 ==========
+        # 旧版（等权平均，无法处理噪声/缺失模态）：
+        # score = (s_im + s_m2 + s_m3) / 3  # (B, N)
+
+        # 新版（可学习权重，自适应调整各模态贡献）：
+        if self.use_adaptive_weights:
+            # 通过 softmax 归一化权重，确保和为 1
+            weights = F.softmax(self.modal_weights, dim=0)  # (3,)
+            # 加权求和
+            score = weights[0] * s_im + weights[1] * s_m2 + weights[2] * s_m3  # (B, N)
+        else:
+            # 回退到简单平均（兼容旧版）
+            score = (s_im + s_m2 + s_m3) / 3  # (B, N)
 
         # ========== Step 2: Top-K 选择 ==========
         num_keep = max(1, math.ceil(N * self.sparse_ratio))  # K = ceil(N×ρ)
@@ -395,7 +438,7 @@ class MultiModalSDTPS(nn.Module):
         global_feat: torch.Tensor,   # (B, C) or (B, 1, C)
     ) -> torch.Tensor:
         """
-        计算余弦相似度
+        计算余弦相似度（优化版）
 
         Args:
             patches: (B, N, C) - patch 特征
@@ -407,12 +450,18 @@ class MultiModalSDTPS(nn.Module):
         if global_feat.dim() == 2:
             global_feat = global_feat.unsqueeze(1)  # (B, C) → (B, 1, C)
 
-        # L2 归一化
+        # ========== 修复4：优化余弦计算，减少内存占用 ==========
+        # 旧版（生成 (B,N,C) 中间张量）：
+        # patches_norm = F.normalize(patches, dim=-1)           # (B, N, C)
+        # global_norm = F.normalize(global_feat, dim=-1)        # (B, 1, C)
+        # cosine_sim = (patches_norm * global_norm).sum(dim=-1)  # (B, N)
+
+        # 新版（使用 einsum，避免中间张量）：
         patches_norm = F.normalize(patches, dim=-1)           # (B, N, C)
         global_norm = F.normalize(global_feat, dim=-1)        # (B, 1, C)
-
-        # 计算相似度
-        cosine_sim = (patches_norm * global_norm).sum(dim=-1)  # (B, N)
+        cosine_sim = torch.einsum('bnc,b1c->bn', patches_norm, global_norm)  # (B, N)
+        # 或使用矩阵乘法（等价）：
+        # cosine_sim = (patches_norm @ global_norm.transpose(-2, -1)).squeeze(-1)
 
         return cosine_sim
 
@@ -447,21 +496,24 @@ class MultiModalSDTPS(nn.Module):
         """
 
         # ==================== RGB 模态 ====================
-        # Step 1: 计算余弦相似度（baseline）
-        rgb_cos_self = self._compute_cosine_similarity(RGB_cash, RGB_global)  # (B, N)
-        rgb_cos_nir = self._compute_cosine_similarity(RGB_cash, NI_global)    # (B, N)
-        rgb_cos_tir = self._compute_cosine_similarity(RGB_cash, TI_global)    # (B, N)
+        # ========== 修复5+6：简化冗余，不再预计算原始空间余弦 ==========
+        # 旧版（先计算原始空间余弦，再传给 Cross-Attention）：
+        # rgb_cos_self = self._compute_cosine_similarity(RGB_cash, RGB_global)  # (B, N)
+        # rgb_cos_nir = self._compute_cosine_similarity(RGB_cash, NI_global)    # (B, N)
+        # rgb_cos_tir = self._compute_cosine_similarity(RGB_cash, TI_global)    # (B, N)
+        # rgb_self_attn = self.rgb_self_attn(RGB_cash, RGB_global, rgb_cos_self)
 
-        # Step 2: 计算 Cross-Attention（带逐 head 余弦门控）
+        # 新版（让 Cross-Attention 内部在投影后计算余弦，统一特征空间）：
         if self.use_cross_attn:
-            rgb_self_attn = self.rgb_self_attn(RGB_cash, RGB_global, rgb_cos_self)
-            rgb_nir_cross = self.rgb_cross_nir(RGB_cash, NI_global, rgb_cos_nir)
-            rgb_tir_cross = self.rgb_cross_tir(RGB_cash, TI_global, rgb_cos_tir)
+            # 传递 None，让 CrossModalAttention 内部在投影后计算余弦
+            rgb_self_attn = self.rgb_self_attn(RGB_cash, RGB_global, cosine_sim=None)
+            rgb_nir_cross = self.rgb_cross_nir(RGB_cash, NI_global, cosine_sim=None)
+            rgb_tir_cross = self.rgb_cross_tir(RGB_cash, TI_global, cosine_sim=None)
         else:
-            # 仅使用余弦相似度
-            rgb_self_attn = rgb_cos_self
-            rgb_nir_cross = rgb_cos_nir
-            rgb_tir_cross = rgb_cos_tir
+            # 仅使用余弦相似度（回退模式）
+            rgb_self_attn = self._compute_cosine_similarity(RGB_cash, RGB_global)
+            rgb_nir_cross = self._compute_cosine_similarity(RGB_cash, NI_global)
+            rgb_tir_cross = self._compute_cosine_similarity(RGB_cash, TI_global)
 
         # Step 3: Token Masking
         RGB_enhanced, rgb_mask = self.rgb_sparse(
@@ -472,18 +524,15 @@ class MultiModalSDTPS(nn.Module):
         )  # (B, N, C), (B, N)
 
         # ==================== NIR 模态 ====================
-        nir_cos_self = self._compute_cosine_similarity(NI_cash, NI_global)
-        nir_cos_rgb = self._compute_cosine_similarity(NI_cash, RGB_global)
-        nir_cos_tir = self._compute_cosine_similarity(NI_cash, TI_global)
-
+        # ========== 修复5+6：同样简化 NIR 模态的余弦计算 ==========
         if self.use_cross_attn:
-            nir_self_attn = self.nir_self_attn(NI_cash, NI_global, nir_cos_self)
-            nir_rgb_cross = self.nir_cross_rgb(NI_cash, RGB_global, nir_cos_rgb)
-            nir_tir_cross = self.nir_cross_tir(NI_cash, TI_global, nir_cos_tir)
+            nir_self_attn = self.nir_self_attn(NI_cash, NI_global, cosine_sim=None)
+            nir_rgb_cross = self.nir_cross_rgb(NI_cash, RGB_global, cosine_sim=None)
+            nir_tir_cross = self.nir_cross_tir(NI_cash, TI_global, cosine_sim=None)
         else:
-            nir_self_attn = nir_cos_self
-            nir_rgb_cross = nir_cos_rgb
-            nir_tir_cross = nir_cos_tir
+            nir_self_attn = self._compute_cosine_similarity(NI_cash, NI_global)
+            nir_rgb_cross = self._compute_cosine_similarity(NI_cash, RGB_global)
+            nir_tir_cross = self._compute_cosine_similarity(NI_cash, TI_global)
 
         NI_enhanced, nir_mask = self.nir_sparse(
             tokens=NI_cash,
@@ -493,18 +542,15 @@ class MultiModalSDTPS(nn.Module):
         )  # (B, N, C), (B, N)
 
         # ==================== TIR 模态 ====================
-        tir_cos_self = self._compute_cosine_similarity(TI_cash, TI_global)
-        tir_cos_rgb = self._compute_cosine_similarity(TI_cash, RGB_global)
-        tir_cos_nir = self._compute_cosine_similarity(TI_cash, NI_global)
-
+        # ========== 修复5+6：同样简化 TIR 模态的余弦计算 ==========
         if self.use_cross_attn:
-            tir_self_attn = self.tir_self_attn(TI_cash, TI_global, tir_cos_self)
-            tir_rgb_cross = self.tir_cross_rgb(TI_cash, RGB_global, tir_cos_rgb)
-            tir_nir_cross = self.tir_cross_nir(TI_cash, NI_global, tir_cos_nir)
+            tir_self_attn = self.tir_self_attn(TI_cash, TI_global, cosine_sim=None)
+            tir_rgb_cross = self.tir_cross_rgb(TI_cash, RGB_global, cosine_sim=None)
+            tir_nir_cross = self.tir_cross_nir(TI_cash, NI_global, cosine_sim=None)
         else:
-            tir_self_attn = tir_cos_self
-            tir_rgb_cross = tir_cos_rgb
-            tir_nir_cross = tir_cos_nir
+            tir_self_attn = self._compute_cosine_similarity(TI_cash, TI_global)
+            tir_rgb_cross = self._compute_cosine_similarity(TI_cash, RGB_global)
+            tir_nir_cross = self._compute_cosine_similarity(TI_cash, NI_global)
 
         TI_enhanced, tir_mask = self.tir_sparse(
             tokens=TI_cash,
