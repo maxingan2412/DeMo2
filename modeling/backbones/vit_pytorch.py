@@ -355,17 +355,17 @@ class Trans(nn.Module):
         # Initialize SIE Embedding
         if camera > 1 and view > 1:
             self.sie_embed = nn.Parameter(torch.zeros(camera * view, 1, embed_dim))
-            trunc_normal_(self.sie_embed, std=.02)
+            trunc_normal_(self.sie_embed, std=1e-6)
             print('camera number is : {} and viewpoint number is : {}'.format(camera, view))
             print('using SIE_Lambda is : {}'.format(sie_xishu))
         elif camera > 1:
             self.sie_embed = nn.Parameter(torch.zeros(camera, 1, embed_dim))
-            trunc_normal_(self.sie_embed, std=.02)
+            trunc_normal_(self.sie_embed, std=1e-6)
             print('camera number is : {}'.format(camera))
             print('using SIE_Lambda is : {}'.format(sie_xishu))
         elif view > 1:
             self.sie_embed = nn.Parameter(torch.zeros(view, 1, embed_dim))
-            trunc_normal_(self.sie_embed, std=.02)
+            trunc_normal_(self.sie_embed, std=1e-6)
             print('viewpoint number is : {}'.format(view))
             print('using SIE_Lambda is : {}'.format(sie_xishu))
 
