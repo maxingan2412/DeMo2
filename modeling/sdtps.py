@@ -6,6 +6,7 @@ SDTPS: Sparse and Dense Token-Aware Patch Selection for Multi-Modal ReID
 - 原始：使用 图像自注意力 + 稀疏文本 + 稠密文本 生成 score
 - 新版：使用 图像自注意力 + 其他两个模态的全局特征 生成 score
 - 应用场景：RGB/NIR/TIR 三模态重识别
+- 引入 Cross-Attention 机制，用余弦相似度作为门控
 """
 
 import math
@@ -13,6 +14,116 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple
+
+
+class CrossModalAttention(nn.Module):
+    """
+    Cross-Attention 模块（带余弦相似度门控）
+
+    核心改动：
+    1. Q/K 反向：global 作为 Query，patches 作为 Key
+       - 让 patches 去检索 global，看哪些 patch 对 global 重要
+    2. 余弦相似度门控：先计算余弦相似度，再用于加权注意力分数
+    3. 在 N（patch）维度做 softmax
+
+    计算流程：
+    1. 余弦相似度：cos_sim = normalize(patches) @ normalize(global)^T  # (B, N)
+    2. Q/K 投影：
+       Q = W_q @ global      # (B, 1, C) -> (B, 1, C)
+       K = W_k @ patches     # (B, N, C) -> (B, N, C)
+    3. Attention：
+       attn = softmax(Q @ K^T / sqrt(d), dim=N)  # (B, num_heads, 1, N)
+    4. 门控融合：
+       score = attn * cos_sim  # 用余弦相似度加权注意力
+    """
+
+    def __init__(
+        self,
+        embed_dim: int = 512,
+        num_heads: int = 4,
+        qkv_bias: bool = True,
+        attn_drop: float = 0.0,
+    ):
+        super().__init__()
+
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        # Q, K 投影（Q 用于 global，K 用于 patches）
+        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=qkv_bias)
+        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=qkv_bias)
+
+        self.attn_drop = nn.Dropout(attn_drop)
+
+        # 门控权重：学习如何结合余弦相似度和注意力分数
+        self.gate_weight = nn.Parameter(torch.ones(1))
+
+        self._init_weights()
+
+    def _init_weights(self):
+        """初始化权重"""
+        nn.init.xavier_uniform_(self.q_proj.weight)
+        nn.init.xavier_uniform_(self.k_proj.weight)
+        if self.q_proj.bias is not None:
+            nn.init.zeros_(self.q_proj.bias)
+        if self.k_proj.bias is not None:
+            nn.init.zeros_(self.k_proj.bias)
+
+    def forward(
+        self,
+        patches: torch.Tensor,       # (B, N, C) - 键（被检索）
+        global_feat: torch.Tensor,   # (B, C) or (B, 1, C) - 查询（检索者）
+        cosine_sim: torch.Tensor,    # (B, N) - 预计算的余弦相似度
+    ) -> torch.Tensor:
+        """
+        计算 Cross-Attention score（带余弦相似度门控）
+
+        Args:
+            patches: (B, N, C) - patch tokens 作为 Key（被检索）
+            global_feat: (B, C) or (B, 1, C) - global feature 作为 Query（检索者）
+            cosine_sim: (B, N) - 预计算的余弦相似度，用于门控
+
+        Returns:
+            score: (B, N) - 每个 patch 的重要性得分
+        """
+        B, N, C = patches.shape
+
+        if global_feat.dim() == 2:
+            global_feat = global_feat.unsqueeze(1)  # (B, C) -> (B, 1, C)
+
+        # Q 投影: global 作为查询
+        q = self.q_proj(global_feat)  # (B, 1, C)
+        q = q.reshape(B, 1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        # (B, num_heads, 1, head_dim)
+
+        # K 投影: patches 作为键
+        k = self.k_proj(patches)  # (B, N, C)
+        k = k.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        # (B, num_heads, N, head_dim)
+
+        # Attention score: Q @ K^T / sqrt(d)
+        # q: (B, num_heads, 1, head_dim) @ k^T: (B, num_heads, head_dim, N)
+        # = (B, num_heads, 1, N)
+        attn = (q @ k.transpose(-2, -1)) * self.scale  # (B, num_heads, 1, N)
+
+        # 在 N（patch）维度做 softmax
+        attn = attn.softmax(dim=-1)  # (B, num_heads, 1, N) - 在最后一维（N）做 softmax
+        attn = attn.squeeze(2)  # (B, num_heads, N)
+
+        # 可选：应用 dropout（训练时）
+        attn = self.attn_drop(attn)
+
+        # 多头平均
+        attn = attn.mean(dim=1)  # (B, N)
+
+        # 门控融合：用余弦相似度加权注意力分数
+        # score = sigmoid(gate_weight) * attn + (1 - sigmoid(gate_weight)) * cosine_sim
+        gate = torch.sigmoid(self.gate_weight)
+        score = gate * attn + (1 - gate) * cosine_sim  # (B, N)
+
+        return score
 
 
 class TokenSparse(nn.Module):
@@ -112,30 +223,40 @@ class TokenSparse(nn.Module):
 
 class MultiModalSDTPS(nn.Module):
     """
-    多模态 SDTPS 模块 - 简化版（保持空间结构）
+    多模态 SDTPS 模块 - 带 Cross-Attention 和余弦相似度门控
 
     功能：
         1. 对每个模态的 patch 特征进行稀疏选择（soft masking）
         2. 每个模态使用其他两个模态的全局特征作为引导
-        3. 输出 masked 的多模态特征，保持原始 token 数量
+        3. 结合余弦相似度和可学习的 Cross-Attention
+        4. 输出 masked 的多模态特征，保持原始 token 数量
 
     改动说明：
-        - 移除 TokenAggregation 层
-        - 不提取 tokens，直接返回 masked tokens (B, N, C)
-        - 简化得分计算：三个注意力的平均
+        - 同时使用余弦相似度和 Cross-Attention（不再二选一）
+        - Q/K 反向：global 作为 Query，patches 作为 Key
+        - 余弦相似度作为门控，加权注意力分数
+        - 在 patch 维度（N）做 softmax
 
     流程（以 RGB 为例）：
-        RGB_patches + RGB_global → 自注意力
-        NIR_global × RGB_patches → 交叉注意力
-        TIR_global × RGB_patches → 交叉注意力
-        ↓
-        综合 score → Top-K mask → 置零未选中的 tokens
+        1. 计算余弦相似度：
+           cos_self = cosine(RGB_patches, RGB_global)
+           cos_nir = cosine(RGB_patches, NIR_global)
+           cos_tir = cosine(RGB_patches, TIR_global)
+
+        2. 计算 Cross-Attention（带余弦门控）：
+           attn_self = CrossAttn(RGB_patches, RGB_global, cos_self)
+           attn_nir = CrossAttn(RGB_patches, NIR_global, cos_nir)
+           attn_tir = CrossAttn(RGB_patches, TIR_global, cos_tir)
+
+        3. 综合 score → Top-K mask → 置零未选中的 tokens
 
     Args:
-        embed_dim: 特征维度（未使用，但保留用于兼容）
+        embed_dim: 特征维度
         sparse_ratio: token 保留比例
         use_gumbel: 是否使用 Gumbel-Softmax
         gumbel_tau: Gumbel 温度
+        use_cross_attn: 是否使用 Cross-Attention（默认 True）
+        num_heads: 注意力头数（默认 4）
     """
 
     def __init__(
@@ -145,11 +266,14 @@ class MultiModalSDTPS(nn.Module):
         use_gumbel: bool = False,
         gumbel_tau: float = 1.0,
         beta: float = 0.25,  # 保留参数用于兼容，但不使用
+        use_cross_attn: bool = True,
+        num_heads: int = 4,
     ):
         super().__init__()
 
         self.embed_dim = embed_dim
         self.sparse_ratio = sparse_ratio
+        self.use_cross_attn = use_cross_attn
 
         # 为每个模态创建独立的 TokenSparse 模块（简化版）
         self.rgb_sparse = TokenSparse(
@@ -170,20 +294,37 @@ class MultiModalSDTPS(nn.Module):
             gumbel_tau=gumbel_tau,
         )
 
-    def _compute_self_attention(
+        # Cross-Attention 模块（如果启用）
+        if self.use_cross_attn:
+            # RGB 模态的 Cross-Attention
+            self.rgb_self_attn = CrossModalAttention(embed_dim, num_heads)
+            self.rgb_cross_nir = CrossModalAttention(embed_dim, num_heads)
+            self.rgb_cross_tir = CrossModalAttention(embed_dim, num_heads)
+
+            # NIR 模态的 Cross-Attention
+            self.nir_self_attn = CrossModalAttention(embed_dim, num_heads)
+            self.nir_cross_rgb = CrossModalAttention(embed_dim, num_heads)
+            self.nir_cross_tir = CrossModalAttention(embed_dim, num_heads)
+
+            # TIR 模态的 Cross-Attention
+            self.tir_self_attn = CrossModalAttention(embed_dim, num_heads)
+            self.tir_cross_rgb = CrossModalAttention(embed_dim, num_heads)
+            self.tir_cross_nir = CrossModalAttention(embed_dim, num_heads)
+
+    def _compute_cosine_similarity(
         self,
         patches: torch.Tensor,       # (B, N, C)
         global_feat: torch.Tensor,   # (B, C) or (B, 1, C)
     ) -> torch.Tensor:
         """
-        计算自注意力 score: 每个 patch 与模态全局特征的相似度
+        计算余弦相似度
 
         Args:
             patches: (B, N, C) - patch 特征
             global_feat: (B, C) or (B, 1, C) - 全局特征
 
         Returns:
-            (B, N) - 自注意力 score
+            (B, N) - 余弦相似度 score
         """
         if global_feat.dim() == 2:
             global_feat = global_feat.unsqueeze(1)  # (B, C) → (B, 1, C)
@@ -193,36 +334,9 @@ class MultiModalSDTPS(nn.Module):
         global_norm = F.normalize(global_feat, dim=-1)        # (B, 1, C)
 
         # 计算相似度
-        self_attn = (patches_norm * global_norm).sum(dim=-1)  # (B, N)
+        cosine_sim = (patches_norm * global_norm).sum(dim=-1)  # (B, N)
 
-        return self_attn
-
-    def _compute_cross_attention(
-        self,
-        patches: torch.Tensor,       # (B, N, C) - 目标模态的 patches
-        cross_global: torch.Tensor,  # (B, C) or (B, 1, C) - 其他模态的全局特征
-    ) -> torch.Tensor:
-        """
-        计算交叉注意力 score: 目标模态的 patches 与其他模态全局特征的相似度
-
-        Args:
-            patches: (B, N, C) - 目标模态的 patch 特征
-            cross_global: (B, C) or (B, 1, C) - 其他模态的全局特征
-
-        Returns:
-            (B, N) - 交叉注意力 score
-        """
-        if cross_global.dim() == 2:
-            cross_global = cross_global.unsqueeze(1)  # (B, C) → (B, 1, C)
-
-        # L2 归一化
-        patches_norm = F.normalize(patches, dim=-1)           # (B, N, C)
-        cross_norm = F.normalize(cross_global, dim=-1)        # (B, 1, C)
-
-        # 计算相似度
-        cross_attn = (patches_norm * cross_norm).sum(dim=-1)  # (B, N)
-
-        return cross_attn
+        return cosine_sim
 
     def forward(
         self,
@@ -255,16 +369,23 @@ class MultiModalSDTPS(nn.Module):
         """
 
         # ==================== RGB 模态 ====================
-        # 1. RGB 自注意力
-        rgb_self_attn = self._compute_self_attention(RGB_cash, RGB_global)  # (B, N)
+        # Step 1: 计算余弦相似度（baseline）
+        rgb_cos_self = self._compute_cosine_similarity(RGB_cash, RGB_global)  # (B, N)
+        rgb_cos_nir = self._compute_cosine_similarity(RGB_cash, NI_global)    # (B, N)
+        rgb_cos_tir = self._compute_cosine_similarity(RGB_cash, TI_global)    # (B, N)
 
-        # 2. NIR → RGB 交叉注意力
-        rgb_nir_cross = self._compute_cross_attention(RGB_cash, NI_global)  # (B, N)
+        # Step 2: 计算 Cross-Attention（带余弦门控）
+        if self.use_cross_attn:
+            rgb_self_attn = self.rgb_self_attn(RGB_cash, RGB_global, rgb_cos_self)
+            rgb_nir_cross = self.rgb_cross_nir(RGB_cash, NI_global, rgb_cos_nir)
+            rgb_tir_cross = self.rgb_cross_tir(RGB_cash, TI_global, rgb_cos_tir)
+        else:
+            # 仅使用余弦相似度
+            rgb_self_attn = rgb_cos_self
+            rgb_nir_cross = rgb_cos_nir
+            rgb_tir_cross = rgb_cos_tir
 
-        # 3. TIR → RGB 交叉注意力
-        rgb_tir_cross = self._compute_cross_attention(RGB_cash, TI_global)  # (B, N)
-
-        # 4. RGB Token Masking
+        # Step 3: Token Masking
         RGB_enhanced, rgb_mask = self.rgb_sparse(
             tokens=RGB_cash,
             self_attention=rgb_self_attn,
@@ -273,9 +394,18 @@ class MultiModalSDTPS(nn.Module):
         )  # (B, N, C), (B, N)
 
         # ==================== NIR 模态 ====================
-        nir_self_attn = self._compute_self_attention(NI_cash, NI_global)
-        nir_rgb_cross = self._compute_cross_attention(NI_cash, RGB_global)
-        nir_tir_cross = self._compute_cross_attention(NI_cash, TI_global)
+        nir_cos_self = self._compute_cosine_similarity(NI_cash, NI_global)
+        nir_cos_rgb = self._compute_cosine_similarity(NI_cash, RGB_global)
+        nir_cos_tir = self._compute_cosine_similarity(NI_cash, TI_global)
+
+        if self.use_cross_attn:
+            nir_self_attn = self.nir_self_attn(NI_cash, NI_global, nir_cos_self)
+            nir_rgb_cross = self.nir_cross_rgb(NI_cash, RGB_global, nir_cos_rgb)
+            nir_tir_cross = self.nir_cross_tir(NI_cash, TI_global, nir_cos_tir)
+        else:
+            nir_self_attn = nir_cos_self
+            nir_rgb_cross = nir_cos_rgb
+            nir_tir_cross = nir_cos_tir
 
         NI_enhanced, nir_mask = self.nir_sparse(
             tokens=NI_cash,
@@ -285,9 +415,18 @@ class MultiModalSDTPS(nn.Module):
         )  # (B, N, C), (B, N)
 
         # ==================== TIR 模态 ====================
-        tir_self_attn = self._compute_self_attention(TI_cash, TI_global)
-        tir_rgb_cross = self._compute_cross_attention(TI_cash, RGB_global)
-        tir_nir_cross = self._compute_cross_attention(TI_cash, NI_global)
+        tir_cos_self = self._compute_cosine_similarity(TI_cash, TI_global)
+        tir_cos_rgb = self._compute_cosine_similarity(TI_cash, RGB_global)
+        tir_cos_nir = self._compute_cosine_similarity(TI_cash, NI_global)
+
+        if self.use_cross_attn:
+            tir_self_attn = self.tir_self_attn(TI_cash, TI_global, tir_cos_self)
+            tir_rgb_cross = self.tir_cross_rgb(TI_cash, RGB_global, tir_cos_rgb)
+            tir_nir_cross = self.tir_cross_nir(TI_cash, NI_global, tir_cos_nir)
+        else:
+            tir_self_attn = tir_cos_self
+            tir_rgb_cross = tir_cos_rgb
+            tir_nir_cross = tir_cos_nir
 
         TI_enhanced, tir_mask = self.tir_sparse(
             tokens=TI_cash,
