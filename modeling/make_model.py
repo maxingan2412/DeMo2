@@ -44,14 +44,14 @@ class DeMo(nn.Module):
         self.USE_LIF = cfg.MODEL.USE_LIF
         self.USE_DGAF = cfg.MODEL.USE_DGAF
         self.USE_MULTIMODAL_SACR = cfg.MODEL.USE_MULTIMODAL_SACR
-        if self.GLOBAL_LOCAL:
-            self.pool = nn.AdaptiveAvgPool1d(1)
-            self.rgb_reduce = nn.Sequential(nn.LayerNorm(2 * self.feat_dim),
-                                            nn.Linear(2 * self.feat_dim, self.feat_dim),QuickGELU())
-            self.nir_reduce = nn.Sequential(nn.LayerNorm(2 * self.feat_dim),
-                                            nn.Linear(2 * self.feat_dim, self.feat_dim), QuickGELU())
-            self.tir_reduce = nn.Sequential(nn.LayerNorm(2 * self.feat_dim),
-                                            nn.Linear(2 * self.feat_dim, self.feat_dim), QuickGELU())
+
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.rgb_reduce = nn.Sequential(nn.LayerNorm(2 * self.feat_dim),
+                                        nn.Linear(2 * self.feat_dim, self.feat_dim),QuickGELU())
+        self.nir_reduce = nn.Sequential(nn.LayerNorm(2 * self.feat_dim),
+                                        nn.Linear(2 * self.feat_dim, self.feat_dim), QuickGELU())
+        self.tir_reduce = nn.Sequential(nn.LayerNorm(2 * self.feat_dim),
+                                        nn.Linear(2 * self.feat_dim, self.feat_dim), QuickGELU())
 
         # SACR: 在 SDTPS 之前对 patch 特征进行增强
         if self.USE_SACR:
