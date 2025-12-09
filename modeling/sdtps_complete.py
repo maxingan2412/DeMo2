@@ -32,10 +32,12 @@ class CrossModalAttention(nn.Module):
        Q = W_q @ global, K = W_k @ patches
        attn = softmax(Q @ K^T / sqrt(d), dim=N)  # (B, num_heads, N)
     3. 逐 head 余弦门控：
-       gate = sigmoid(cosine * scale[h] + bias[h])  # (B, num_heads, N)
-       每个 head 有独立的 scale 和 bias
+       gate_logits = cosine * scale[h] + bias[h]  # (B, num_heads, N)
+       [可选] gate_logits = LayerNorm(gate_logits)  # 稳定尺度
+       gate = sigmoid(gate_logits)  # (B, num_heads, N)
     4. 门控注意力：
        attn_gated = attn * gate  # 逐元素点乘
+       [可选] attn_gated = renormalize(attn_gated)  # 保持概率性
     5. 多头平均：
        score = mean(attn_gated, dim=heads)  # (B, N)
 
@@ -43,7 +45,16 @@ class CrossModalAttention(nn.Module):
     - 参数极少：num_heads × 2 个参数（如 4 heads = 8 params）
     - 逐 head 自适应：每个 head 学习不同的门控策略
     - 物理意义清晰：scale 控制温度，bias 控制偏置
-    - 简洁高效：不需要额外的 MLP 或 LayerNorm
+    - 简洁高效：基础版本不需要额外的 LayerNorm
+
+    改进选项：
+    - use_gate_norm: 在 sigmoid 前使用 LayerNorm 稳定逐 head 尺度
+    - renormalize_attn: 在门控后重新归一化，保持权重和为 1
+
+    初始化策略（避免过稀疏）：
+    - gate_scale = 0.5 (较小，使曲线平缓)
+    - gate_bias = 0.5 (正值，避免门控值过低)
+    - 初始门控值：sigmoid(0.5*cosine+0.5) ∈ [0.62, 0.73] (保守)
     """
 
     def __init__(
@@ -52,6 +63,8 @@ class CrossModalAttention(nn.Module):
         num_heads: int = 4,
         qkv_bias: bool = True,
         attn_drop: float = 0.0,
+        use_gate_norm: bool = False,  # 是否在 gate 前使用 LayerNorm
+        renormalize_attn: bool = False,  # 是否在门控后重新归一化注意力
     ):
         super().__init__()
 
@@ -59,6 +72,7 @@ class CrossModalAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
         self.scale = self.head_dim ** -0.5
+        self.renormalize_attn = renormalize_attn
 
         # Q, K 投影（Q 用于 global，K 用于 patches）
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=qkv_bias)
@@ -71,6 +85,11 @@ class CrossModalAttention(nn.Module):
         self.gate_scale = nn.Parameter(torch.ones(num_heads, 1, 1))
         self.gate_bias = nn.Parameter(torch.zeros(num_heads, 1, 1))
 
+        # 可选：LayerNorm 用于稳定逐 head 的尺度
+        self.use_gate_norm = use_gate_norm
+        if use_gate_norm:
+            self.gate_norm = nn.LayerNorm(num_heads)
+
         self._init_weights()
 
     def _init_weights(self):
@@ -82,11 +101,14 @@ class CrossModalAttention(nn.Module):
         if self.k_proj.bias is not None:
             nn.init.zeros_(self.k_proj.bias)
 
-        # gate_scale 初始化为 1.0，gate_bias 初始化为 0.0
-        # 使得初始时 sigmoid(1.0 * cosine + 0.0) ≈ sigmoid(cosine)
-        # 即初始时门控接近余弦相似度本身
-        nn.init.ones_(self.gate_scale)
-        nn.init.zeros_(self.gate_bias)
+        # gate_scale 初始化策略：避免训练初期过稀疏
+        # 初始化为较小值（0.5），使得 sigmoid(0.5 * cosine) 更平缓
+        nn.init.constant_(self.gate_scale, 0.5)  # 从 1.0 改为 0.5
+
+        # gate_bias 初始化为正值，避免初期门控值过低
+        nn.init.constant_(self.gate_bias, 0.5)   # 从 0.0 改为 0.5
+        # 初始效果：sigmoid(0.5 * cosine + 0.5) ≈ [0.62, 0.73]（当 cosine ∈ [-1, 1]）
+        # 比 sigmoid(cosine) ≈ [0.27, 0.73] 更保守，避免过度稀疏
 
     def forward(
         self,
@@ -147,12 +169,24 @@ class CrossModalAttention(nn.Module):
 
         gate_logits = cosine_expanded * gate_scale_broadcast + gate_bias_broadcast  # (B, num_heads, N)
 
+        # 可选：LayerNorm 稳定逐 head 尺度（当 N 可变时推荐）
+        if self.use_gate_norm:
+            # gate_logits: (B, num_heads, N) → permute → (B, N, num_heads)
+            gate_logits = gate_logits.permute(0, 2, 1)  # (B, N, num_heads)
+            gate_logits = self.gate_norm(gate_logits)   # LayerNorm on num_heads 维度
+            gate_logits = gate_logits.permute(0, 2, 1)  # (B, num_heads, N)
+
         # Sigmoid 门控到 [0, 1]
         gate = torch.sigmoid(gate_logits)  # (B, num_heads, N)
 
         # ========== Step 4: 门控注意力（在多头平均前） ==========
         # 逐 head 逐 patch 门控
         attn_gated = attn * gate  # (B, num_heads, N) * (B, num_heads, N)
+
+        # 可选：重新归一化以保持概率性（attn_gated 和为 1）
+        if self.renormalize_attn:
+            # 在 N 维度重新归一化，确保每个 head 的权重和为 1
+            attn_gated = attn_gated / (attn_gated.sum(dim=-1, keepdim=True) + 1e-8)  # (B, num_heads, N)
 
         # ========== Step 5: 多头平均 ==========
         score = attn_gated.mean(dim=1)  # (B, N)
