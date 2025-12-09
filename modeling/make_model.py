@@ -225,13 +225,6 @@ class DeMo(nn.Module):
             RGB_cash, RGB_global = self.BACKBONE(RGB, cam_label=cam_label, view_label=view_label)
             NI_cash, NI_global = self.BACKBONE(NI, cam_label=cam_label, view_label=view_label)
             TI_cash, TI_global = self.BACKBONE(TI, cam_label=cam_label, view_label=view_label)
-            if self.GLOBAL_LOCAL:  # 设置为false
-                RGB_local = self.pool(RGB_cash.permute(0, 2, 1)).squeeze(-1)
-                NI_local = self.pool(NI_cash.permute(0, 2, 1)).squeeze(-1)
-                TI_local = self.pool(TI_cash.permute(0, 2, 1)).squeeze(-1)
-                RGB_global = self.rgb_reduce(torch.cat([RGB_global, RGB_local], dim=-1))
-                NI_global = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))
-                TI_global = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))
 
             # SACR: 对 patch 特征进行多尺度上下文增强
             if self.USE_MULTIMODAL_SACR:
@@ -289,22 +282,34 @@ class DeMo(nn.Module):
                     RGB_global, NI_global, TI_global
                 )
 
+                # GLOBAL_LOCAL: 在 SDTPS 增强后进行 local+global 融合降维
+                if self.GLOBAL_LOCAL:
+                    # 从增强后的 tokens (B, K+1, C) 进行 pooling 得到 local 特征
+                    # RGB_enhanced: (B, K+1, C) → permute → (B, C, K+1) → pool → (B, C, 1) → squeeze → (B, C)
+                    RGB_local = self.pool(RGB_enhanced.permute(0, 2, 1)).squeeze(-1)  # (B, C)
+                    NI_local = self.pool(NI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
+                    TI_local = self.pool(TI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
+
+                    # 使用 reduce 层融合 backbone 的 global token 和 enhanced 的 pooled local
+                    RGB_sdtps = self.rgb_reduce(torch.cat([RGB_global, RGB_local], dim=-1))  # (B, C)
+                    NI_sdtps = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))     # (B, C)
+                    TI_sdtps = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))     # (B, C)
+                else:
+                    # 原始方式：mean pooling
+                    RGB_sdtps = RGB_enhanced.mean(dim=1)  # (B, K+1, C) → (B, C)
+                    NI_sdtps = NI_enhanced.mean(dim=1)
+                    TI_sdtps = TI_enhanced.mean(dim=1)
+
                 # DGAF: 使用双门控自适应融合替代简单 concat
                 if self.USE_DGAF:
                     if self.DGAF_VERSION == 'v3':
                         # V3: 直接输入 tokens，内置 attention pooling
                         sdtps_feat = self.dgaf(RGB_enhanced, NI_enhanced, TI_enhanced)  # (B, 3C)
                     else:
-                        # V1: 先 mean pooling，再输入 (B, C)
-                        RGB_sdtps = RGB_enhanced.mean(dim=1)  # (B, K+1, C) → (B, C)
-                        NI_sdtps = NI_enhanced.mean(dim=1)
-                        TI_sdtps = TI_enhanced.mean(dim=1)
+                        # V1: 使用处理后的 sdtps 特征
                         sdtps_feat = self.dgaf(RGB_sdtps, NI_sdtps, TI_sdtps)  # (B, 3C)
                 else:
-                    # 原始方式：mean pooling + 简单拼接
-                    RGB_sdtps = RGB_enhanced.mean(dim=1)  # (B, K+1, C) → (B, C)
-                    NI_sdtps = NI_enhanced.mean(dim=1)
-                    TI_sdtps = TI_enhanced.mean(dim=1)
+                    # 原始方式：简单拼接处理后的特征
                     sdtps_feat = torch.cat([RGB_sdtps, NI_sdtps, TI_sdtps], dim=-1)  # (B, 3C)
 
                 sdtps_score = self.classifier_sdtps(self.bottleneck_sdtps(sdtps_feat))
@@ -404,13 +409,6 @@ class DeMo(nn.Module):
             RGB_cash, RGB_global = self.BACKBONE(RGB, cam_label=cam_label, view_label=view_label)
             NI_cash, NI_global = self.BACKBONE(NI, cam_label=cam_label, view_label=view_label)
             TI_cash, TI_global = self.BACKBONE(TI, cam_label=cam_label, view_label=view_label)
-            if self.GLOBAL_LOCAL:
-                RGB_local = self.pool(RGB_cash.permute(0, 2, 1)).squeeze(-1)
-                NI_local = self.pool(NI_cash.permute(0, 2, 1)).squeeze(-1)
-                TI_local = self.pool(TI_cash.permute(0, 2, 1)).squeeze(-1)
-                RGB_global = self.rgb_reduce(torch.cat([RGB_global, RGB_local], dim=-1))
-                NI_global = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))
-                TI_global = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))
 
             # SACR: 对 patch 特征进行多尺度上下文增强
             if self.USE_MULTIMODAL_SACR:
@@ -457,22 +455,34 @@ class DeMo(nn.Module):
                     RGB_global, NI_global, TI_global
                 )
 
+                # GLOBAL_LOCAL: 在 SDTPS 增强后进行 local+global 融合降维
+                if self.GLOBAL_LOCAL:
+                    # 从增强后的 tokens (B, K+1, C) 进行 pooling 得到 local 特征
+                    # RGB_enhanced: (B, K+1, C) → permute → (B, C, K+1) → pool → (B, C, 1) → squeeze → (B, C)
+                    RGB_local = self.pool(RGB_enhanced.permute(0, 2, 1)).squeeze(-1)  # (B, C)
+                    NI_local = self.pool(NI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
+                    TI_local = self.pool(TI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
+
+                    # 使用 reduce 层融合 backbone 的 global token 和 enhanced 的 pooled local
+                    RGB_sdtps = self.rgb_reduce(torch.cat([RGB_global, RGB_local], dim=-1))  # (B, C)
+                    NI_sdtps = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))     # (B, C)
+                    TI_sdtps = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))     # (B, C)
+                else:
+                    # 原始方式：mean pooling
+                    RGB_sdtps = RGB_enhanced.mean(dim=1)
+                    NI_sdtps = NI_enhanced.mean(dim=1)
+                    TI_sdtps = TI_enhanced.mean(dim=1)
+
                 # DGAF: 使用双门控自适应融合替代简单 concat
                 if self.USE_DGAF:
                     if self.DGAF_VERSION == 'v3':
                         # V3: 直接输入 tokens，内置 attention pooling
                         sdtps_feat = self.dgaf(RGB_enhanced, NI_enhanced, TI_enhanced)
                     else:
-                        # V1: 先 mean pooling，再输入 (B, C)
-                        RGB_sdtps = RGB_enhanced.mean(dim=1)
-                        NI_sdtps = NI_enhanced.mean(dim=1)
-                        TI_sdtps = TI_enhanced.mean(dim=1)
+                        # V1: 使用处理后的 sdtps 特征
                         sdtps_feat = self.dgaf(RGB_sdtps, NI_sdtps, TI_sdtps)
                 else:
-                    # 原始方式：mean pooling + 简单拼接
-                    RGB_sdtps = RGB_enhanced.mean(dim=1)
-                    NI_sdtps = NI_enhanced.mean(dim=1)
-                    TI_sdtps = TI_enhanced.mean(dim=1)
+                    # 原始方式：简单拼接处理后的特征
                     sdtps_feat = torch.cat([RGB_sdtps, NI_sdtps, TI_sdtps], dim=-1)
 
                 if return_pattern == 1:
