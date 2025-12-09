@@ -8,7 +8,7 @@ from modeling.backbones.basic_cnn_params.flops import give_supported_ops
 import copy
 from modeling.meta_arch import build_transformer, weights_init_classifier, weights_init_kaiming
 from modeling.moe.AttnMOE import GeneralFusion, QuickGELU
-from modeling.sdtps_complete import MultiModalSDTPS
+from modeling.sdtps import MultiModalSDTPS
 from modeling.sacr import SACR
 from modeling.multimodal_sacr import MultiModalSACR, MultiModalSACRv2
 from modeling.trimodal_lif import TrimodalLIF, TrimodalLIFLoss
