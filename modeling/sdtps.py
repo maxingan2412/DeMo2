@@ -80,18 +80,19 @@ class CrossModalAttention(nn.Module):
 
         self.attn_drop = nn.Dropout(attn_drop)
 
-        # ========== 专家建议：用 Conv1d 替代手动 broadcast，代码简洁 ==========
+        # ========== 专家建议：用 Linear 层替代手动 broadcast ==========
+        # 专家原话："cosine_sim = self.linear(cosine_sim)"
+
         # 旧版（手动 expand + broadcast，代码冗长）：
         # self.gate_scale = nn.Parameter(torch.ones(num_heads, 1, 1))
         # self.gate_bias = nn.Parameter(torch.zeros(num_heads, 1, 1))
         # 使用时需要：expand, view, broadcast... 9行代码
 
-        # 新版（专家建议：直接 Conv1d，简洁）：
-        # Conv1d(1, num_heads, kernel_size=1): (B, 1, N) → (B, num_heads, N)
-        # kernel_size=1: 逐位置独立变换（等价于 Linear，但更适合序列数据）
-        self.gate_conv = nn.Conv1d(1, num_heads, kernel_size=1, bias=True)
-        # 参数量：num_heads × 1 × 1 + num_heads = 2×num_heads（与旧版相同）
-        # 使用：仅需 1 行！gate_logits = self.gate_conv(cosine_expanded)
+        # 新版（专家建议：Linear 层）：
+        # 对每个 token 的标量余弦做 Linear(1 → num_heads) 映射
+        self.gate_linear = nn.Linear(1, num_heads, bias=True)
+        # 参数量：num_heads × 1 + num_heads = 2×num_heads（与旧版相同）
+        # 使用：仅需 2-3 行，清晰简洁
 
         # 可选：LayerNorm 用于稳定逐 head 的尺度
         self.use_gate_norm = use_gate_norm
@@ -109,11 +110,11 @@ class CrossModalAttention(nn.Module):
         if self.k_proj.bias is not None:
             nn.init.zeros_(self.k_proj.bias)
 
-        # ========== Conv1d 门控初始化（scale=1.0, bias=0.0）==========
-        # gate_conv.weight: (num_heads, 1, 1)
-        # gate_conv.bias: (num_heads,)
-        nn.init.constant_(self.gate_conv.weight, 1.0)  # 初始 scale=1.0
-        nn.init.constant_(self.gate_conv.bias, 0.0)    # 初始 bias=0.0
+        # ========== Linear 门控初始化 ==========
+        # gate_linear.weight: (num_heads, 1)
+        # gate_linear.bias: (num_heads,)
+        nn.init.constant_(self.gate_linear.weight, 1.0)
+        nn.init.constant_(self.gate_linear.bias, 0.0)
         # 效果：gate = sigmoid(cosine) ≈ [0.27, 0.73]
 
     def forward(
@@ -163,18 +164,19 @@ class CrossModalAttention(nn.Module):
         attn = self.attn_drop(attn)
 
         # ========== Step 3: 逐 head 余弦门控 ==========
-        # ========== 专家建议：直接用 Conv1d，简洁高效 ==========
-        # 旧版（手动 expand + broadcast，代码冗长）：
-        # cosine_expanded = cosine_sim.unsqueeze(1)  # (B, 1, N)
-        # cosine_proj = cosine_expanded.expand(-1, self.num_heads, -1)  # (B, num_heads, N)
+        # ========== 专家建议：用 Linear 层，简洁高效 ==========
+        # 旧版（手动 expand + broadcast，9行代码）：
+        # cosine_expanded = cosine_sim.unsqueeze(1)
+        # cosine_proj = cosine_expanded.expand(-1, self.num_heads, -1)
         # gate_scale_broadcast = self.gate_scale.view(1, self.num_heads, 1)
         # gate_bias_broadcast = self.gate_bias.view(1, self.num_heads, 1)
         # gate_logits = cosine_proj * gate_scale_broadcast + gate_bias_broadcast
 
-        # 新版（专家建议：一行搞定）：
-        cosine_expanded = cosine_sim.unsqueeze(1)  # (B, 1, N)
-        gate_logits = self.gate_conv(cosine_expanded)  # (B, num_heads, N)
-        # Conv1d(1→num_heads, kernel=1) 逐位置独立变换，简洁清晰
+        # 新版（专家建议：Linear 层，3行代码）：
+        # cosine_sim: (B, N) → (B, N, 1) → Linear(1, num_heads) → (B, N, num_heads) → (B, num_heads, N)
+        cosine_for_gate = cosine_sim.unsqueeze(-1)  # (B, N, 1)
+        gate_logits = self.gate_linear(cosine_for_gate)  # (B, N, num_heads)
+        gate_logits = gate_logits.transpose(1, 2)  # (B, num_heads, N)
 
         # 可选：LayerNorm 稳定逐 head 尺度（当 N 可变时推荐）
         if self.use_gate_norm:
