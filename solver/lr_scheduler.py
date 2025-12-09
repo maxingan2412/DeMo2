@@ -122,12 +122,25 @@ class WarmupLinearLR(torch.optim.lr_scheduler._LRScheduler):
         return 1.0
 
     def _decay_factor_at(self, epoch):
-        """Calculate linear decay factor at given epoch"""
+        """Calculate linear decay factor at given epoch
+
+        Since processor.py calls scheduler.step(epoch) with epoch starting at 1,
+        we ensure:
+        - epoch 1 (or first post-warmup epoch): factor=1.0 (full base_lr)
+        - epoch max_iters: factor=0.0 (reaches min_lr)
+        """
         if epoch <= self.warmup_iters:
             return 1.0
-        # Linear decay from 1.0 to 0.0 over (max_iters - warmup_iters) epochs
-        total_decay_iters = max(1, self.max_iters - self.warmup_iters)
-        progress = (epoch - self.warmup_iters) / float(total_decay_iters)
+
+        # Total epochs to decay over (from first post-warmup to last epoch)
+        # e.g., if max_iters=50, warmup=0: decay from epoch 1 to 50 is 49 steps
+        effective_max = self.max_iters - self.warmup_iters
+        if effective_max <= 1:
+            # Edge case: only one epoch, no decay
+            return 0.0
+
+        # Progress from 0 (first post-warmup epoch) to 1 (last epoch)
+        progress = (epoch - self.warmup_iters - 1) / float(effective_max - 1)
         return max(1.0 - progress, 0.0)
 
     def get_lr(self):

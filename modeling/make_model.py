@@ -381,7 +381,7 @@ def forward(self, x, label=None, cam_label=None, view_label=None, return_pattern
             # Priority 3: DGAF Only
             elif self.USE_DGAF:
                 if self.direct:
-                    result = (dgaf_score, dgaf_feat，ori_score, ori)
+                    result = (dgaf_score, dgaf_feat, ori_score, ori)
                 else:
                     result = (dgaf_score, dgaf_feat, RGB_ori_score, RGB_global, NI_ori_score, NI_global, TI_ori_score, TI_global)
             # Priority 4: Baseline
