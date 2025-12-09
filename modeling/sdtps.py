@@ -255,6 +255,19 @@ class TokenSparse(nn.Module):
         """
         B, N, C = tokens.size()
 
+        # ========== 专家建议5：确保输入 score 非负（用于排序/选择）==========
+        # ReID 跨模态 cosine 可能为负（模态差异/对齐误差）
+        # 负值会在 TopK/排序中"一票否决"有用的 patch
+        #
+        # 处理策略：
+        # - CrossModalAttention 的 softmax 输出已经 ∈ [0, 1]（无需处理）
+        # - 但 use_cross_attn=False 分支直接传 cosine，可能为负
+        # - 统一 clamp 确保鲁棒性
+        self_attention = self_attention.clamp(min=0)      # 确保非负
+        cross_attention_m2 = cross_attention_m2.clamp(min=0)
+        cross_attention_m3 = cross_attention_m3.clamp(min=0)
+        # clamp(min=0) 优于 (x+1)/2，保留正值动态范围
+
         # ========== Step 1: 计算综合得分（样本自适应权重）==========
         # 归一化各注意力得分
         def normalize_score(s: torch.Tensor) -> torch.Tensor:
@@ -513,10 +526,11 @@ class MultiModalSDTPS(nn.Module):
             rgb_nir_cross = self.rgb_cross_nir(RGB_cash, NI_global, rgb_cos_nir)
             rgb_tir_cross = self.rgb_cross_tir(RGB_cash, TI_global, rgb_cos_tir)
         else:
-            # 仅使用余弦相似度
-            rgb_self_attn = rgb_cos_self
-            rgb_nir_cross = rgb_cos_nir
-            rgb_tir_cross = rgb_cos_tir
+            # ========== 专家建议5：直接使用 cosine 时，确保非负 ==========
+            # 原始 cosine 可能为负，用于 token selection 前需要 clamp
+            rgb_self_attn = rgb_cos_self.clamp(min=0)
+            rgb_nir_cross = rgb_cos_nir.clamp(min=0)
+            rgb_tir_cross = rgb_cos_tir.clamp(min=0)
 
         # 保留投影空间余弦的实现作为注释（未来可通过超参数切换）
         # if self.use_cross_attn:
@@ -543,9 +557,10 @@ class MultiModalSDTPS(nn.Module):
             nir_rgb_cross = self.nir_cross_rgb(NI_cash, RGB_global, nir_cos_rgb)
             nir_tir_cross = self.nir_cross_tir(NI_cash, TI_global, nir_cos_tir)
         else:
-            nir_self_attn = nir_cos_self
-            nir_rgb_cross = nir_cos_rgb
-            nir_tir_cross = nir_cos_tir
+            # ========== 专家建议5：直接使用 cosine 时，确保非负 ==========
+            nir_self_attn = nir_cos_self.clamp(min=0)
+            nir_rgb_cross = nir_cos_rgb.clamp(min=0)
+            nir_tir_cross = nir_cos_tir.clamp(min=0)
 
         # 保留投影空间余弦的实现作为注释（未来可通过超参数切换）
         # if self.use_cross_attn:
@@ -571,9 +586,10 @@ class MultiModalSDTPS(nn.Module):
             tir_rgb_cross = self.tir_cross_rgb(TI_cash, RGB_global, tir_cos_rgb)
             tir_nir_cross = self.tir_cross_nir(TI_cash, NI_global, tir_cos_nir)
         else:
-            tir_self_attn = tir_cos_self
-            tir_rgb_cross = tir_cos_rgb
-            tir_nir_cross = tir_cos_nir
+            # ========== 专家建议5：直接使用 cosine 时，确保非负 ==========
+            tir_self_attn = tir_cos_self.clamp(min=0)
+            tir_rgb_cross = tir_cos_rgb.clamp(min=0)
+            tir_nir_cross = tir_cos_nir.clamp(min=0)
 
         # 保留投影空间余弦的实现作为注释（未来可通过超参数切换）
         # if self.use_cross_attn:
