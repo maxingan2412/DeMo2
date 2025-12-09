@@ -277,6 +277,7 @@ class DeMo(nn.Module):
             # SDTPS 分支：使用 token selection 替代 HDM+ATM
             if self.USE_SDTPS:
                 # SDTPS token selection and enhancement
+                # 输出: RGB_enhanced (B, N, C) - 保持空间结构，未选中的token被置零
                 RGB_enhanced, NI_enhanced, TI_enhanced, rgb_mask, nir_mask, tir_mask = self.sdtps(
                     RGB_cash, NI_cash, TI_cash,
                     RGB_global, NI_global, TI_global
@@ -291,7 +292,7 @@ class DeMo(nn.Module):
                         # V1: 需要先将 tokens 聚合成 (B, C) 特征
                         if self.GLOBAL_LOCAL:
                             # GLOBAL_LOCAL 模式：pool(enhanced) + backbone_global 融合降维
-                            # RGB_enhanced: (B, K+1, C) → permute → (B, C, K+1) → pool → (B, C, 1) → squeeze → (B, C)
+                            # RGB_enhanced: (B, N, C) → permute → (B, C, N) → pool → (B, C, 1) → squeeze → (B, C)
                             RGB_local = self.pool(RGB_enhanced.permute(0, 2, 1)).squeeze(-1)  # (B, C)
                             NI_local = self.pool(NI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
                             TI_local = self.pool(TI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
@@ -302,7 +303,7 @@ class DeMo(nn.Module):
                             TI_sdtps = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))     # (B, C)
                         else:
                             # 默认方式：mean pooling
-                            RGB_sdtps = RGB_enhanced.mean(dim=1)  # (B, K+1, C) → (B, C)
+                            RGB_sdtps = RGB_enhanced.mean(dim=1)  # (B, N, C) → (B, C)
                             NI_sdtps = NI_enhanced.mean(dim=1)
                             TI_sdtps = TI_enhanced.mean(dim=1)
 
@@ -320,7 +321,7 @@ class DeMo(nn.Module):
                         TI_sdtps = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))     # (B, C)
                     else:
                         # 默认方式：mean pooling
-                        RGB_sdtps = RGB_enhanced.mean(dim=1)  # (B, K+1, C) → (B, C)
+                        RGB_sdtps = RGB_enhanced.mean(dim=1)  # (B, N, C) → (B, C)
                         NI_sdtps = NI_enhanced.mean(dim=1)
                         TI_sdtps = TI_enhanced.mean(dim=1)
 
@@ -464,6 +465,7 @@ class DeMo(nn.Module):
 
             # SDTPS 推理分支
             if self.USE_SDTPS:
+                # 输出: RGB_enhanced (B, N, C) - 保持空间结构，未选中的token被置零
                 RGB_enhanced, NI_enhanced, TI_enhanced, _, _, _ = self.sdtps(
                     RGB_cash, NI_cash, TI_cash,
                     RGB_global, NI_global, TI_global
@@ -478,7 +480,7 @@ class DeMo(nn.Module):
                         # V1: 需要先将 tokens 聚合成 (B, C) 特征
                         if self.GLOBAL_LOCAL:
                             # GLOBAL_LOCAL 模式：pool(enhanced) + backbone_global 融合降维
-                            # RGB_enhanced: (B, K+1, C) → permute → (B, C, K+1) → pool → (B, C, 1) → squeeze → (B, C)
+                            # RGB_enhanced: (B, N, C) → permute → (B, C, N) → pool → (B, C, 1) → squeeze → (B, C)
                             RGB_local = self.pool(RGB_enhanced.permute(0, 2, 1)).squeeze(-1)  # (B, C)
                             NI_local = self.pool(NI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
                             TI_local = self.pool(TI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
