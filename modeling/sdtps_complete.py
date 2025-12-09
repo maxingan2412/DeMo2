@@ -18,13 +18,14 @@ from typing import Optional, Tuple
 
 class CrossModalAttention(nn.Module):
     """
-    Cross-Attention 模块（带余弦相似度门控）
+    Cross-Attention 模块（带余弦相似度逐元素门控）
 
     核心改动：
     1. Q/K 反向：global 作为 Query，patches 作为 Key
        - 让 patches 去检索 global，看哪些 patch 对 global 重要
-    2. 余弦相似度门控：先计算余弦相似度，再用于加权注意力分数
+    2. 余弦相似度门控：通过轻量级 MLP 学习逐 patch 的门控权重
     3. 在 N（patch）维度做 softmax
+    4. 逐元素点乘：attn * gated_cosine（而非线性组合）
 
     计算流程：
     1. 余弦相似度：cos_sim = normalize(patches) @ normalize(global)^T  # (B, N)
@@ -33,8 +34,14 @@ class CrossModalAttention(nn.Module):
        K = W_k @ patches     # (B, N, C) -> (B, N, C)
     3. Attention：
        attn = softmax(Q @ K^T / sqrt(d), dim=N)  # (B, num_heads, 1, N)
-    4. 门控融合：
-       score = attn * cos_sim  # 用余弦相似度加权注意力
+    4. 余弦门控：
+       gated_cosine = MLP(cosine_sim)  # (B, N) → (B, N)，逐 patch 学习
+       score = attn * gated_cosine  # 逐元素点乘
+
+    优势：
+    - 逐 patch 自适应门控（而非全局标量）
+    - 余弦相似度作为"置信度"调节注意力
+    - 非线性交互，表达能力更强
     """
 
     def __init__(
@@ -43,6 +50,7 @@ class CrossModalAttention(nn.Module):
         num_heads: int = 4,
         qkv_bias: bool = True,
         attn_drop: float = 0.0,
+        gate_hidden_dim: int = 32,  # 门控 MLP 的隐藏层维度
     ):
         super().__init__()
 
@@ -57,8 +65,13 @@ class CrossModalAttention(nn.Module):
 
         self.attn_drop = nn.Dropout(attn_drop)
 
-        # 门控权重：学习如何结合余弦相似度和注意力分数
-        self.gate_weight = nn.Parameter(torch.ones(1))
+        # 余弦相似度门控：轻量级 MLP，逐 patch 学习门控权重
+        self.cosine_gate = nn.Sequential(
+            nn.Linear(1, gate_hidden_dim),
+            nn.GELU(),
+            nn.Linear(gate_hidden_dim, 1),
+            nn.Sigmoid(),  # 输出 [0, 1]，作为置信度/质量分数
+        )
 
         self._init_weights()
 
@@ -71,6 +84,14 @@ class CrossModalAttention(nn.Module):
         if self.k_proj.bias is not None:
             nn.init.zeros_(self.k_proj.bias)
 
+        # 初始化门控网络：使其初始时接近恒等映射
+        # 让 sigmoid(Linear(x)) ≈ x（当 x ∈ [0, 1] 时）
+        for m in self.cosine_gate.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight, gain=0.1)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
     def forward(
         self,
         patches: torch.Tensor,       # (B, N, C) - 键（被检索）
@@ -78,12 +99,12 @@ class CrossModalAttention(nn.Module):
         cosine_sim: torch.Tensor,    # (B, N) - 预计算的余弦相似度
     ) -> torch.Tensor:
         """
-        计算 Cross-Attention score（带余弦相似度门控）
+        计算 Cross-Attention score（带余弦相似度逐元素门控）
 
         Args:
             patches: (B, N, C) - patch tokens 作为 Key（被检索）
             global_feat: (B, C) or (B, 1, C) - global feature 作为 Query（检索者）
-            cosine_sim: (B, N) - 预计算的余弦相似度，用于门控
+            cosine_sim: (B, N) - 预计算的余弦相似度，用于逐 patch 门控
 
         Returns:
             score: (B, N) - 每个 patch 的重要性得分
@@ -118,10 +139,13 @@ class CrossModalAttention(nn.Module):
         # 多头平均
         attn = attn.mean(dim=1)  # (B, N)
 
-        # 门控融合：用余弦相似度加权注意力分数
-        # score = sigmoid(gate_weight) * attn + (1 - sigmoid(gate_weight)) * cosine_sim
-        gate = torch.sigmoid(self.gate_weight)
-        score = gate * attn + (1 - gate) * cosine_sim  # (B, N)
+        # 余弦相似度门控：逐 patch 学习门控权重
+        # cosine_sim: (B, N) → (B, N, 1) → MLP → (B, N, 1) → (B, N)
+        gated_cosine = self.cosine_gate(cosine_sim.unsqueeze(-1)).squeeze(-1)  # (B, N)
+
+        # 逐元素点乘：注意力 * 门控的余弦相似度
+        # 语义：余弦相似度作为"置信度"，调节注意力分数
+        score = attn * gated_cosine  # (B, N) * (B, N) → (B, N)
 
         return score
 
