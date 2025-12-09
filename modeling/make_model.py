@@ -217,365 +217,198 @@ class DeMo(nn.Module):
         del model, input
         return sum(Gflops.values()) * 1e9
 
-    def forward(self, x, label=None, cam_label=None, view_label=None, return_pattern=3, img_path=None):
-        if self.training:
-            RGB = x['RGB']
-            NI = x['NI']
-            TI = x['TI']
-            RGB_cash, RGB_global = self.BACKBONE(RGB, cam_label=cam_label, view_label=view_label)
-            NI_cash, NI_global = self.BACKBONE(NI, cam_label=cam_label, view_label=view_label)
-            TI_cash, TI_global = self.BACKBONE(TI, cam_label=cam_label, view_label=view_label)
+def forward(self, x, label=None, cam_label=None, view_label=None, return_pattern=3, img_path=None):
+        # ==========================================================
+        # 1. Input Preparation & Missing Modality Simulation (Eval)
+        # ==========================================================
+        RGB = x['RGB']
+        NI = x['NI']
+        TI = x['TI']
 
-            # SACR: 对 patch 特征进行多尺度上下文增强
-            if self.USE_MULTIMODAL_SACR:
-                # MultiModal-SACR: 三模态拼接 → SACR → 拆分（跨模态交互）
-                RGB_cash, NI_cash, TI_cash = self.multimodal_sacr(RGB_cash, NI_cash, TI_cash)
-            elif self.USE_SACR:
-                # 单模态 SACR：三个模态独立处理
-                RGB_cash = self.sacr(RGB_cash)  # (B, N, C) → (B, N, C)
-                NI_cash = self.sacr(NI_cash)    # (B, N, C) → (B, N, C)
-                TI_cash = self.sacr(TI_cash)    # (B, N, C) → (B, N, C)
+        # 仅在非训练模式下处理缺失模态模拟
+        if not self.training:
+            if self.miss_type == 'r': RGB = torch.zeros_like(RGB)
+            elif self.miss_type == 'n': NI = torch.zeros_like(NI)
+            elif self.miss_type == 't': TI = torch.zeros_like(TI)
+            elif self.miss_type == 'rn': RGB = torch.zeros_like(RGB); NI = torch.zeros_like(NI)
+            elif self.miss_type == 'rt': RGB = torch.zeros_like(RGB); TI = torch.zeros_like(TI)
+            elif self.miss_type == 'nt': NI = torch.zeros_like(NI); TI = torch.zeros_like(TI)
 
-            # Trimodal-LIF: Quality-aware feature enhancement
-            # LIF 计算质量感知权重，对 patch 特征进行逐位置加权
-            lif_loss = None
-            if self.USE_LIF:
-                # 1. 预测质量图（从原始图像）
-                q_rgb, q_nir, q_tir = self.lif.predict_quality(RGB, NI, TI)
-                # q_rgb: (B, 1, 32, 16) - QualityPredictor 经过 3 次 AvgPool2d(2,2): 256×128 → 32×16
+        if 'cam_label' in x:
+            cam_label = x['cam_label']
 
-                # 2. 计算 LIF 损失（自监督）
+        # ==========================================================
+        # 2. Backbone Feature Extraction
+        # ==========================================================
+        RGB_cash, RGB_global = self.BACKBONE(RGB, cam_label=cam_label, view_label=view_label)
+        NI_cash, NI_global = self.BACKBONE(NI, cam_label=cam_label, view_label=view_label)
+        TI_cash, TI_global = self.BACKBONE(TI, cam_label=cam_label, view_label=view_label)
+
+        # ==========================================================
+        # 3. SACR: Context Enhancement
+        # ==========================================================
+        if self.USE_MULTIMODAL_SACR:
+            RGB_cash, NI_cash, TI_cash = self.multimodal_sacr(RGB_cash, NI_cash, TI_cash)
+        elif self.USE_SACR:
+            RGB_cash = self.sacr(RGB_cash)
+            NI_cash = self.sacr(NI_cash)
+            TI_cash = self.sacr(TI_cash)
+
+        # ==========================================================
+        # 4. Trimodal-LIF: Quality-aware Weighting
+        # ==========================================================
+        lif_loss = None
+        if self.USE_LIF:
+            # 1. Predict Quality & Calculate Loss
+            q_rgb, q_nir, q_tir = self.lif.predict_quality(RGB, NI, TI)
+            if self.training:
                 lif_loss = self.lif_loss(q_rgb, q_nir, q_tir, RGB, NI, TI)['total']
 
-                # 3. 将质量图 resize 到 patch grid 尺寸（16×8）
-                patch_h = self.image_size[0] // self.cfg.MODEL.STRIDE_SIZE[0]  # 256/16 = 16
-                patch_w = self.image_size[1] // self.cfg.MODEL.STRIDE_SIZE[1]  # 128/16 = 8
+            # 2. Resize to patch grid
+            patch_h = self.image_size[0] // self.cfg.MODEL.STRIDE_SIZE[0]
+            patch_w = self.image_size[1] // self.cfg.MODEL.STRIDE_SIZE[1]
+            
+            q_rgb_patch = F.interpolate(q_rgb, size=(patch_h, patch_w), mode='bilinear')
+            q_nir_patch = F.interpolate(q_nir, size=(patch_h, patch_w), mode='bilinear')
+            q_tir_patch = F.interpolate(q_tir, size=(patch_h, patch_w), mode='bilinear')
 
-                q_rgb_patch = F.interpolate(q_rgb, size=(patch_h, patch_w), mode='bilinear')  # (B, 1, 16, 8)
-                q_nir_patch = F.interpolate(q_nir, size=(patch_h, patch_w), mode='bilinear')  # (B, 1, 16, 8)
-                q_tir_patch = F.interpolate(q_tir, size=(patch_h, patch_w), mode='bilinear')  # (B, 1, 16, 8)
+            # 3. Calculate Spatial Weights
+            q_logits = torch.cat([q_rgb_patch, q_nir_patch, q_tir_patch], dim=1)
+            q_weights_spatial = F.softmax(q_logits * self.lif_temperature, dim=1)
 
-                # 4. 计算逐位置的模态权重（每个 patch 位置有独立权重）
-                q_logits = torch.cat([q_rgb_patch, q_nir_patch, q_tir_patch], dim=1)  # (B, 3, 16, 8)
-                # 使用配置的温度参数，而非硬编码
-                # LIF_BETA=0.4 时温度=4.0，比硬编码的10.0更平滑
-                q_weights_spatial = F.softmax(q_logits * self.lif_temperature, dim=1)  # (B, 3, 16, 8)
+            # 4. Apply Weights (Reshape to match tokens)
+            w_rgb = q_weights_spatial[:, 0:1].flatten(2).transpose(1, 2) # (B, 128, 1)
+            w_nir = q_weights_spatial[:, 1:2].flatten(2).transpose(1, 2)
+            w_tir = q_weights_spatial[:, 2:3].flatten(2).transpose(1, 2)
 
-                # 5. Reshape 为 token 维度：(B, 1, 16, 8) → (B, 128, 1)
-                w_rgb_token = q_weights_spatial[:, 0:1].flatten(2).transpose(1, 2)  # (B, 128, 1)
-                w_nir_token = q_weights_spatial[:, 1:2].flatten(2).transpose(1, 2)  # (B, 128, 1)
-                w_tir_token = q_weights_spatial[:, 2:3].flatten(2).transpose(1, 2)  # (B, 128, 1)
+            RGB_cash = RGB_cash * w_rgb
+            NI_cash = NI_cash * w_nir
+            TI_cash = TI_cash * w_tir
 
-                # 6. 加权 patch 特征（逐 patch 加权！）
-                RGB_cash = RGB_cash * w_rgb_token  # (B, 128, 512) * (B, 128, 1)
-                NI_cash = NI_cash * w_nir_token    # 每个 patch 根据其位置的质量被加权
-                TI_cash = TI_cash * w_tir_token
+        # ==========================================================
+        # 5. Feature Aggregation (SDTPS / DGAF / Baseline)
+        # ==========================================================
+        sdtps_feat = None
+        sdtps_score = None
+        dgaf_feat = None
+        dgaf_score = None
 
-                # 效果：图像左边亮（RGB patch权重大），右边暗（NIR/TIR patch权重大）
-                # 这是真正的局部质量感知增强！
+        # --- Helper: Fuse Global + Pooled Local Features ---
+        def fuse_global_local(feat_cash, feat_global, pool_layer, reduce_layer):
+            feat_local = pool_layer(feat_cash.permute(0, 2, 1)).squeeze(-1)
+            return reduce_layer(torch.cat([feat_global, feat_local], dim=-1))
 
-            # SDTPS 分支：使用 token selection 替代 HDM+ATM
-            if self.USE_SDTPS:
-                # SDTPS token selection and enhancement
-                # 输出: RGB_enhanced (B, N, C) - 保持空间结构，未选中的token被置零
-                RGB_enhanced, NI_enhanced, TI_enhanced, rgb_mask, nir_mask, tir_mask = self.sdtps(
-                    RGB_cash, NI_cash, TI_cash,
-                    RGB_global, NI_global, TI_global
-                )
+        # --- Logic Branching ---
+        
+        # A. SDTPS Path
+        if self.USE_SDTPS:
+            # Token Selection
+            RGB_enh, NI_enh, TI_enh, _, _, _ = self.sdtps(
+                RGB_cash, NI_cash, TI_cash, RGB_global, NI_global, TI_global
+            )
+            # Global-Local Fusion for SDTPS features
+            RGB_final = fuse_global_local(RGB_enh, RGB_global, self.pool, self.rgb_reduce)
+            NI_final  = fuse_global_local(NI_enh, NI_global, self.pool, self.nir_reduce)
+            TI_final  = fuse_global_local(TI_enh, TI_global, self.pool, self.tir_reduce)
+            
+            sdtps_feat = torch.cat([RGB_final, NI_final, TI_final], dim=-1)
+            
+            if self.training:
+                sdtps_score = self.classifier_sdtps(self.bottleneck_sdtps(sdtps_feat))
 
-                # DGAF: 使用双门控自适应融合替代简单 concat
-                if self.USE_DGAF:
-                    # SDTPS + DGAF: 必须使用 V1 版本 + GLOBAL_LOCAL
-                    # 因为需要将 SDTPS 输出聚合成 (B, C)
-                    if self.DGAF_VERSION == 'v3':
-                        raise ValueError("SDTPS + DGAF 组合必须使用 DGAF_VERSION='v1' + GLOBAL_LOCAL=True")
-
-                    # 使用 GLOBAL_LOCAL 聚合 SDTPS 输出
-                    if not self.GLOBAL_LOCAL:
-                        raise ValueError("SDTPS + DGAF V1 必须启用 GLOBAL_LOCAL")
-
-                    # GLOBAL_LOCAL 模式：pool(enhanced) + backbone_global 融合降维
-                    RGB_local = self.pool(RGB_enhanced.permute(0, 2, 1)).squeeze(-1)  # (B, C)
-                    NI_local = self.pool(NI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
-                    TI_local = self.pool(TI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
-
-                    # 融合 backbone 的 global 特征和 enhanced 的 pooled local 特征
-                    RGB_sdtps = self.rgb_reduce(torch.cat([RGB_global, RGB_local], dim=-1))  # (B, C)
-                    NI_sdtps = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))     # (B, C)
-                    TI_sdtps = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))     # (B, C)
-
-                    # SDTPS 特征的分类（第一个损失）
-                    sdtps_feat = torch.cat([RGB_sdtps, NI_sdtps, TI_sdtps], dim=-1)  # (B, 3C)
-                    sdtps_score = self.classifier_sdtps(self.bottleneck_sdtps(sdtps_feat))
-
-                    # DGAF V1 处理
-                    dgaf_feat = self.dgaf(RGB_sdtps, NI_sdtps, TI_sdtps)  # (B, 3C)
-                    dgaf_score = self.classifier_dgaf(self.bottleneck_dgaf(dgaf_feat))
+        # B. DGAF Path
+        if self.USE_DGAF:
+            if self.DGAF_VERSION == 'v3':
+                # V3 directly uses patch tokens
+                dgaf_feat = self.dgaf(RGB_cash, NI_cash, TI_cash)
+            else:
+                # V1 needs aggregated features (B, C)
+                if self.USE_SDTPS:
+                    # If SDTPS ran, reuse its fused features
+                    if self.DGAF_VERSION == 'v3': raise ValueError("SDTPS + DGAF requires V1")
+                    if not self.GLOBAL_LOCAL: raise ValueError("SDTPS + DGAF V1 requires GLOBAL_LOCAL")
+                    
+                    # RGB_final calculated in SDTPS block above
+                    dgaf_feat = self.dgaf(RGB_final, NI_final, TI_final)
                 else:
-                    # SDTPS only: 不使用 DGAF，不使用 GLOBAL_LOCAL，直接 mean pooling
-                    RGB_sdtps = RGB_enhanced.mean(dim=1)  # (B, N, C) → (B, C)
-                    NI_sdtps = NI_enhanced.mean(dim=1)
-                    TI_sdtps = TI_enhanced.mean(dim=1)
-
-                    sdtps_feat = torch.cat([RGB_sdtps, NI_sdtps, TI_sdtps], dim=-1)  # (B, 3C)
-                    sdtps_score = self.classifier_sdtps(self.bottleneck_sdtps(sdtps_feat))
-
-            # 单独使用 DGAF（不依赖 SDTPS）：直接处理 backbone 的 patch tokens
-            elif self.USE_DGAF:
-                if self.DGAF_VERSION == 'v3':
-                    # V3: 直接接受 patch tokens (B, N, C)
-                    dgaf_feat = self.dgaf(RGB_cash, NI_cash, TI_cash)  # (B, 3C)
-                else:
-                    # V1 及其他版本: 需要先聚合成 (B, C)
+                    # Standalone DGAF: Calculate fused features from raw Backbone output
                     if self.GLOBAL_LOCAL:
-                        # GLOBAL_LOCAL 模式：pool(cash) + backbone_global 融合降维
-                        RGB_local = self.pool(RGB_cash.permute(0, 2, 1)).squeeze(-1)  # (B, C)
-                        NI_local = self.pool(NI_cash.permute(0, 2, 1)).squeeze(-1)    # (B, C)
-                        TI_local = self.pool(TI_cash.permute(0, 2, 1)).squeeze(-1)    # (B, C)
-
-                        RGB_dgaf = self.rgb_reduce(torch.cat([RGB_global, RGB_local], dim=-1))  # (B, C)
-                        NI_dgaf = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))     # (B, C)
-                        TI_dgaf = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))     # (B, C)
+                        r_in = fuse_global_local(RGB_cash, RGB_global, self.pool, self.rgb_reduce)
+                        n_in = fuse_global_local(NI_cash, NI_global, self.pool, self.nir_reduce)
+                        t_in = fuse_global_local(TI_cash, TI_global, self.pool, self.tir_reduce)
                     else:
-                        # 默认方式：仅使用 global 特征
-                        RGB_dgaf = RGB_global
-                        NI_dgaf = NI_global
-                        TI_dgaf = TI_global
+                        r_in, n_in, t_in = RGB_global, NI_global, TI_global
+                    
+                    dgaf_feat = self.dgaf(r_in, n_in, t_in)
 
-                    dgaf_feat = self.dgaf(RGB_dgaf, NI_dgaf, TI_dgaf)  # (B, 3C)
-
+            if self.training:
                 dgaf_score = self.classifier_dgaf(self.bottleneck_dgaf(dgaf_feat))
 
-            if self.HDM or self.ATM:
-                moe_feat, loss_moe = self.generalFusion(RGB_cash, NI_cash, TI_cash, RGB_global, NI_global, TI_global)
-                moe_score = self.classifier_moe(self.bottleneck_moe(moe_feat))
+        # C. Baseline / Direct Path
+        # Always compute 'ori' for fallback or auxiliary returns
+        ori = torch.cat([RGB_global, NI_global, TI_global], dim=-1)
+        ori_score = None
+        
+        # Calculate scores if needed (Standard Baseline or Separate Heads)
+        if self.training:
             if self.direct:
-                ori = torch.cat([RGB_global, NI_global, TI_global], dim=-1)
                 ori_global = self.bottleneck(ori)
                 ori_score = self.classifier(ori_global)
             else:
+                # Individual classifiers per modality
                 RGB_ori_score = self.classifier_r(self.bottleneck_r(RGB_global))
                 NI_ori_score = self.classifier_n(self.bottleneck_n(NI_global))
                 TI_ori_score = self.classifier_t(self.bottleneck_t(TI_global))
 
-            # 构造返回值，可能包含 LIF 损失
-            if self.direct:
-                if self.USE_SDTPS and self.USE_DGAF:
-                    # SDTPS + DGAF: 返回两个分支的损失
-                    # 注意：这种情况必须使用 DGAF V1 + GLOBAL_LOCAL
-                    result = (sdtps_score, sdtps_feat, dgaf_score, dgaf_feat)
-                    if self.USE_LIF and lif_loss is not None:
-                        result = result + (lif_loss,)
-                    return result
-                elif self.USE_SDTPS:
-                    # SDTPS only: 只返回 SDTPS 特征
+
+        # ==========================================================
+        # 6. Return Logic
+        # ==========================================================
+        
+        # --- Training Return ---
+        if self.training:
+            result = ()
+            
+            # Priority 1: SDTPS + DGAF
+            if self.USE_SDTPS and self.USE_DGAF:
+                result = (sdtps_score, sdtps_feat, dgaf_score, dgaf_feat)
+            # Priority 2: SDTPS Only
+            elif self.USE_SDTPS:
+                if self.direct:
                     result = (sdtps_score, sdtps_feat)
-                    if self.USE_LIF and lif_loss is not None:
-                        result = result + (lif_loss,)
-                    return result
-                elif self.USE_DGAF:
-                    # DGAF only: 只返回 DGAF 特征
-                    result = (dgaf_score, dgaf_feat)
-                    if self.USE_LIF and lif_loss is not None:
-                        result = result + (lif_loss,)
-                    return result
-                elif self.HDM or self.ATM:
-                    result = (moe_score, moe_feat, ori_score, ori, loss_moe)
-                    if self.USE_LIF and lif_loss is not None:
-                        result = result + (lif_loss,)
-                    return result
                 else:
-                    # Baseline: 只返回 ori
-                    if self.USE_LIF and lif_loss is not None:
-                        return (ori_score, ori, lif_loss)
-                    return (ori_score, ori)
-            else:
-                if self.USE_SDTPS:
-                    # SDTPS 分支（非direct模式）
                     result = (sdtps_score, sdtps_feat, RGB_ori_score, RGB_global, NI_ori_score, NI_global, TI_ori_score, TI_global)
-                    if self.USE_LIF and lif_loss is not None:
-                        result = result + (lif_loss,)
-                    return result
-                elif self.USE_DGAF:
-                    # 单独 DGAF 分支（非direct模式）
+            # Priority 3: DGAF Only
+            elif self.USE_DGAF:
+                if self.direct:
+                    result = (dgaf_score, dgaf_feat，ori_score, ori)
+                else:
                     result = (dgaf_score, dgaf_feat, RGB_ori_score, RGB_global, NI_ori_score, NI_global, TI_ori_score, TI_global)
-                    if self.USE_LIF and lif_loss is not None:
-                        result = result + (lif_loss,)
-                    return result
-                elif self.HDM or self.ATM:
-                    result = (moe_score, moe_feat, RGB_ori_score, RGB_global, NI_ori_score, NI_global, TI_ori_score, TI_global, loss_moe)
-                    if self.USE_LIF and lif_loss is not None:
-                        result = result + (lif_loss,)
-                    return result
+            # Priority 4: Baseline
+            else:
+                if self.direct:
+                    result = (ori_score, ori)
                 else:
                     result = (RGB_ori_score, RGB_global, NI_ori_score, NI_global, TI_ori_score, TI_global)
-                    if self.USE_LIF and lif_loss is not None:
-                        result = result + (lif_loss,)
-                    return result
 
+            # Append LIF loss if it exists
+            if self.USE_LIF and lif_loss is not None:
+                result = result + (lif_loss,)
+            
+            return result
+
+        # --- Inference Return ---
         else:
-            RGB = x['RGB']
-            NI = x['NI']
-            TI = x['TI']
-            if self.miss_type == 'r':
-                RGB = torch.zeros_like(RGB)
-            elif self.miss_type == 'n':
-                NI = torch.zeros_like(NI)
-            elif self.miss_type == 't':
-                TI = torch.zeros_like(TI)
-            elif self.miss_type == 'rn':
-                RGB = torch.zeros_like(RGB)
-                NI = torch.zeros_like(NI)
-            elif self.miss_type == 'rt':
-                RGB = torch.zeros_like(RGB)
-                TI = torch.zeros_like(TI)
-            elif self.miss_type == 'nt':
-                NI = torch.zeros_like(NI)
-                TI = torch.zeros_like(TI)
+            # Flexible return based on configuration
+            if self.USE_SDTPS and not self.USE_DGAF:
+                return sdtps_feat
+            elif not self.USE_SDTPS and self.USE_DGAF:
+                return torch.cat([ori, dgaf_feat], dim=-1)
+            elif self.USE_SDTPS and self.USE_DGAF:
+               return torch.cat([sdtps_feat, dgaf_feat], dim=-1)
+            else:
+                return ori
 
-            if 'cam_label' in x:
-                cam_label = x['cam_label']
-            RGB_cash, RGB_global = self.BACKBONE(RGB, cam_label=cam_label, view_label=view_label)
-            NI_cash, NI_global = self.BACKBONE(NI, cam_label=cam_label, view_label=view_label)
-            TI_cash, TI_global = self.BACKBONE(TI, cam_label=cam_label, view_label=view_label)
-
-            # SACR: 对 patch 特征进行多尺度上下文增强
-            if self.USE_MULTIMODAL_SACR:
-                # MultiModal-SACR: 三模态拼接 → SACR → 拆分（跨模态交互）
-                RGB_cash, NI_cash, TI_cash = self.multimodal_sacr(RGB_cash, NI_cash, TI_cash)
-            elif self.USE_SACR:
-                # 单模态 SACR：三个模态独立处理
-                RGB_cash = self.sacr(RGB_cash)  # (B, N, C) → (B, N, C)
-                NI_cash = self.sacr(NI_cash)    # (B, N, C) → (B, N, C)
-                TI_cash = self.sacr(TI_cash)    # (B, N, C) → (B, N, C)
-
-            # Trimodal-LIF: Quality-aware feature enhancement (推理时也使用)
-            if self.USE_LIF:
-                # 1. 预测质量图
-                q_rgb, q_nir, q_tir = self.lif.predict_quality(RGB, NI, TI)
-
-                # 2. Resize 到 patch grid 尺寸
-                patch_h = self.image_size[0] // self.cfg.MODEL.STRIDE_SIZE[0]
-                patch_w = self.image_size[1] // self.cfg.MODEL.STRIDE_SIZE[1]
-
-                q_rgb_patch = F.interpolate(q_rgb, size=(patch_h, patch_w), mode='bilinear')
-                q_nir_patch = F.interpolate(q_nir, size=(patch_h, patch_w), mode='bilinear')
-                q_tir_patch = F.interpolate(q_tir, size=(patch_h, patch_w), mode='bilinear')
-
-                # 3. 计算逐位置权重
-                q_logits = torch.cat([q_rgb_patch, q_nir_patch, q_tir_patch], dim=1)
-                q_weights_spatial = F.softmax(q_logits * self.lif_temperature, dim=1)
-
-                # 4. Reshape 为 token 维度并加权 patch 特征
-                w_rgb_token = q_weights_spatial[:, 0:1].flatten(2).transpose(1, 2)
-                w_nir_token = q_weights_spatial[:, 1:2].flatten(2).transpose(1, 2)
-                w_tir_token = q_weights_spatial[:, 2:3].flatten(2).transpose(1, 2)
-
-                RGB_cash = RGB_cash * w_rgb_token
-                NI_cash = NI_cash * w_nir_token
-                TI_cash = TI_cash * w_tir_token
-
-            ori = torch.cat([RGB_global, NI_global, TI_global], dim=-1)
-
-            # SDTPS 推理分支
-            if self.USE_SDTPS:
-                # 输出: RGB_enhanced (B, N, C) - 保持空间结构，未选中的token被置零
-                RGB_enhanced, NI_enhanced, TI_enhanced, _, _, _ = self.sdtps(
-                    RGB_cash, NI_cash, TI_cash,
-                    RGB_global, NI_global, TI_global
-                )
-
-                # DGAF: 使用双门控自适应融合替代简单 concat
-                if self.USE_DGAF:
-                    if self.DGAF_VERSION == 'v3':
-                        # V3: 直接输入 tokens，内置 attention pooling
-                        sdtps_feat = self.dgaf(RGB_enhanced, NI_enhanced, TI_enhanced)
-                    else:
-                        # V1: 需要先将 tokens 聚合成 (B, C) 特征
-                        if self.GLOBAL_LOCAL:
-                            # GLOBAL_LOCAL 模式：pool(enhanced) + backbone_global 融合降维
-                            # RGB_enhanced: (B, N, C) → permute → (B, C, N) → pool → (B, C, 1) → squeeze → (B, C)
-                            RGB_local = self.pool(RGB_enhanced.permute(0, 2, 1)).squeeze(-1)  # (B, C)
-                            NI_local = self.pool(NI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
-                            TI_local = self.pool(TI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
-
-                            # 融合 backbone 的 global 特征和 enhanced 的 pooled local 特征
-                            RGB_sdtps = self.rgb_reduce(torch.cat([RGB_global, RGB_local], dim=-1))  # (B, C)
-                            NI_sdtps = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))     # (B, C)
-                            TI_sdtps = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))     # (B, C)
-                        else:
-                            # 默认方式：mean pooling
-                            RGB_sdtps = RGB_enhanced.mean(dim=1)
-                            NI_sdtps = NI_enhanced.mean(dim=1)
-                            TI_sdtps = TI_enhanced.mean(dim=1)
-
-                        sdtps_feat = self.dgaf(RGB_sdtps, NI_sdtps, TI_sdtps)
-                else:
-                    # 不使用 DGAF：简单拼接（也需要聚合特征）
-                    if self.GLOBAL_LOCAL:
-                        # GLOBAL_LOCAL 模式：pool(enhanced) + backbone_global 融合降维
-                        RGB_local = self.pool(RGB_enhanced.permute(0, 2, 1)).squeeze(-1)  # (B, C)
-                        NI_local = self.pool(NI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
-                        TI_local = self.pool(TI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
-
-                        RGB_sdtps = self.rgb_reduce(torch.cat([RGB_global, RGB_local], dim=-1))  # (B, C)
-                        NI_sdtps = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))     # (B, C)
-                        TI_sdtps = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))     # (B, C)
-                    else:
-                        # 默认方式：mean pooling
-                        RGB_sdtps = RGB_enhanced.mean(dim=1)
-                        NI_sdtps = NI_enhanced.mean(dim=1)
-                        TI_sdtps = TI_enhanced.mean(dim=1)
-
-                    sdtps_feat = torch.cat([RGB_sdtps, NI_sdtps, TI_sdtps], dim=-1)
-
-                if return_pattern == 1:
-                    return ori
-                elif return_pattern == 2:
-                    return sdtps_feat
-                elif return_pattern == 3:
-                    return torch.cat([ori, sdtps_feat], dim=-1)
-
-            # 单独使用 DGAF（不依赖 SDTPS）：直接处理 backbone 的 patch tokens
-            elif self.USE_DGAF:
-                if self.DGAF_VERSION == 'v3':
-                    # V3: 直接接受 patch tokens (B, N, C)
-                    dgaf_feat = self.dgaf(RGB_cash, NI_cash, TI_cash)  # (B, 3C)
-                else:
-                    # V1 及其他版本: 需要先聚合成 (B, C)
-                    if self.GLOBAL_LOCAL:
-                        # GLOBAL_LOCAL 模式：pool(cash) + backbone_global 融合降维
-                        RGB_local = self.pool(RGB_cash.permute(0, 2, 1)).squeeze(-1)  # (B, C)
-                        NI_local = self.pool(NI_cash.permute(0, 2, 1)).squeeze(-1)    # (B, C)
-                        TI_local = self.pool(TI_cash.permute(0, 2, 1)).squeeze(-1)    # (B, C)
-
-                        RGB_dgaf = self.rgb_reduce(torch.cat([RGB_global, RGB_local], dim=-1))  # (B, C)
-                        NI_dgaf = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))     # (B, C)
-                        TI_dgaf = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))     # (B, C)
-                    else:
-                        # 默认方式：仅使用 global 特征
-                        RGB_dgaf = RGB_global
-                        NI_dgaf = NI_global
-                        TI_dgaf = TI_global
-
-                    dgaf_feat = self.dgaf(RGB_dgaf, NI_dgaf, TI_dgaf)  # (B, 3C)
-
-                if return_pattern == 1:
-                    return ori
-                elif return_pattern == 2:
-                    return dgaf_feat
-                elif return_pattern == 3:
-                    return torch.cat([ori, dgaf_feat], dim=-1)
-
-            if self.HDM or self.ATM:
-                moe_feat = self.generalFusion(RGB_cash, NI_cash, TI_cash, RGB_global, NI_global, TI_global)
-                if return_pattern == 1:
-                    return ori
-                elif return_pattern == 2:
-                    return moe_feat
-                elif return_pattern == 3:
-                    return torch.cat([ori, moe_feat], dim=-1)
-            return ori
 
 
 __factory_T_type = {
