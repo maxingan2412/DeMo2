@@ -1,0 +1,101 @@
+================================================================================
+12组消融实验 - 快速开始
+================================================================================
+
+【实验设计】
+总数: 12组实验
+矩阵: 3个数据集 × 4种架构配置
+
+  数据集:
+  - RGBNT201 (行人重识别, 201 IDs)
+  - RGBNT100 (车辆重识别, 100 IDs)
+  - MSVR310  (车辆重识别, 310 IDs)
+
+  架构配置:
+  1. Baseline:        无 SDTPS, 无 DGAF
+  2. SDTPS only:      有 SDTPS, 无 DGAF
+  3. DGAF V3 only:    无 SDTPS, 有 DGAF V3
+  4. SDTPS+DGAF V3:   有 SDTPS, 有 DGAF V3
+
+【快速运行】
+
+一键运行所有12组:
+  bash scripts/run_ablation_4arch_12exp.sh
+
+单独运行示例 (RGBNT201):
+  # 1. Baseline
+  CUDA_VISIBLE_DEVICES=0 python train_net.py \
+      --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml \
+      MODEL.USE_SDTPS False MODEL.USE_DGAF False MODEL.GLOBAL_LOCAL False
+
+  # 2. SDTPS only
+  CUDA_VISIBLE_DEVICES=1 python train_net.py \
+      --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml \
+      MODEL.USE_SDTPS True MODEL.USE_DGAF False MODEL.GLOBAL_LOCAL False
+
+  # 3. DGAF V3 only
+  CUDA_VISIBLE_DEVICES=2 python train_net.py \
+      --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml \
+      MODEL.USE_SDTPS False MODEL.USE_DGAF True MODEL.DGAF_VERSION v3
+
+  # 4. SDTPS + DGAF V3
+  CUDA_VISIBLE_DEVICES=3 python train_net.py \
+      --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml \
+      MODEL.USE_SDTPS True MODEL.USE_DGAF True MODEL.DGAF_VERSION v3
+
+【实验配置详情】
+
+配置1 - Baseline:
+  架构: Backbone → global concat → Classifier
+  参数: MODEL.USE_SDTPS=False, MODEL.USE_DGAF=False, MODEL.GLOBAL_LOCAL=False
+  输出: (ori_score, ori)
+
+配置2 - SDTPS only:
+  架构: Backbone → SDTPS → mean pooling → Classifier
+  参数: MODEL.USE_SDTPS=True, MODEL.USE_DGAF=False, MODEL.GLOBAL_LOCAL=False
+  输出: (sdtps_score, sdtps_feat, ori_score, ori)
+
+配置3 - DGAF V3 only:
+  架构: Backbone → DGAF V3 → Classifier
+  参数: MODEL.USE_SDTPS=False, MODEL.USE_DGAF=True, MODEL.DGAF_VERSION=v3
+  输出: (dgaf_score, dgaf_feat, ori_score, ori)
+
+配置4 - SDTPS + DGAF V3:
+  架构: Backbone → SDTPS → DGAF V3 → Classifier
+  参数: MODEL.USE_SDTPS=True, MODEL.USE_DGAF=True, MODEL.DGAF_VERSION=v3
+  输出: (sdtps_score, sdtps_feat, ori_score, ori)
+
+【关键设置】
+
+所有实验统一设置:
+  - GLOBAL_LOCAL: False  (V3 不需要)
+  - SDTPS_CROSS_ATTN_TYPE: 'attention'  (使用 Cross-Attention)
+  - SDTPS_CROSS_ATTN_HEADS: 4
+  - SDTPS_SPARSE_RATIO: 0.7  (70% token 保留)
+  - DGAF_VERSION: 'v3'  (直接处理 tokens)
+
+【输出目录】
+
+logs/
+├── RGBNT201_4arch_ablation_YYYYMMDD_HHMMSS/
+├── RGBNT100_4arch_ablation_YYYYMMDD_HHMMSS/
+└── MSVR310_4arch_ablation_YYYYMMDD_HHMMSS/
+    ├── 01_baseline.log
+    ├── 02_sdtps_only.log
+    ├── 03_dgaf_v3_only.log
+    └── 04_sdtps_dgaf_v3.log
+
+【预期性能】
+
+Baseline < SDTPS only ≈ DGAF V3 only < SDTPS + DGAF V3
+  (最差)                                          (最优)
+
+【文档】
+
+详细说明: docs/ABLATION_12GROUPS.md
+训练脚本: scripts/run_ablation_4arch_12exp.sh
+
+================================================================================
+创建时间: 2025-12-09
+Commit: c184b6c
+================================================================================
