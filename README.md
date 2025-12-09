@@ -141,7 +141,8 @@ python train_net.py --config_file configs/RGBNT201/DeMo.yml
 - The hyperparameter configuration is designed to ensure compatibility with devices equipped with less than 24GB of memory.   
 - Thank you for your attention and interest!
 
----
+--- sleep 5h && python train_net.py --config_file configs/RGBNT201/DeMo_SACR_SDTPS_weight1.yml 
+
 
 ## Star History
 
