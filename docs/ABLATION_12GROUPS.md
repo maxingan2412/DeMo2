@@ -7,20 +7,207 @@
 
 ### 实验矩阵
 
-| # | 数据集 | 配置 | USE_SDTPS | USE_DGAF | DGAF_VERSION | GLOBAL_LOCAL | CROSS_ATTN |
-|---|--------|------|-----------|----------|--------------|--------------|------------|
-| 1 | RGBNT201 | Baseline | False | False | - | False | - |
-| 2 | RGBNT201 | SDTPS only | True | False | - | False | attention |
-| 3 | RGBNT201 | DGAF V3 only | False | True | v3 | False | - |
-| 4 | RGBNT201 | SDTPS+DGAF V3 | True | True | v3 | False | attention |
-| 5 | RGBNT100 | Baseline | False | False | - | False | - |
-| 6 | RGBNT100 | SDTPS only | True | False | - | False | attention |
-| 7 | RGBNT100 | DGAF V3 only | False | True | v3 | False | - |
-| 8 | RGBNT100 | SDTPS+DGAF V3 | True | True | v3 | False | attention |
-| 9 | MSVR310 | Baseline | False | False | - | False | - |
-| 10 | MSVR310 | SDTPS only | True | False | - | False | attention |
-| 11 | MSVR310 | DGAF V3 only | False | True | v3 | False | - |
-| 12 | MSVR310 | SDTPS+DGAF V3 | True | True | v3 | False | attention |
+| # | 数据集 | 配置 | USE_SDTPS | USE_DGAF | DGAF_VERSION | GLOBAL_LOCAL | 损失 |
+|---|--------|------|-----------|----------|--------------|--------------|------|
+| 1 | RGBNT201 | Baseline | False | False | - | False | ori only |
+| 2 | RGBNT201 | SDTPS only | True | False | - | False | sdtps only |
+| 3 | RGBNT201 | DGAF V3 only | False | True | v3 | False | dgaf only |
+| 4 | RGBNT201 | SDTPS+DGAF V1 | True | True | **v1** | **True** | sdtps + dgaf |
+| 5 | RGBNT100 | Baseline | False | False | - | False | ori only |
+| 6 | RGBNT100 | SDTPS only | True | False | - | False | sdtps only |
+| 7 | RGBNT100 | DGAF V3 only | False | True | v3 | False | dgaf only |
+| 8 | RGBNT100 | SDTPS+DGAF V1 | True | True | **v1** | **True** | sdtps + dgaf |
+| 9 | MSVR310 | Baseline | False | False | - | False | ori only |
+| 10 | MSVR310 | SDTPS only | True | False | - | False | sdtps only |
+| 11 | MSVR310 | DGAF V3 only | False | True | v3 | False | dgaf only |
+| 12 | MSVR310 | SDTPS+DGAF V1 | True | True | **v1** | **True** | sdtps + dgaf |
+
+---
+
+## 4种架构配置详解
+
+### 1. Baseline（基准）
+```yaml
+MODEL.USE_SDTPS: False
+MODEL.USE_DGAF: False
+MODEL.GLOBAL_LOCAL: False
+```
+
+**数据流:**
+```
+Backbone → RGB_global (B,C) × 3 → concat → ori (B,3C) → Classifier
+```
+
+**输出**: `(ori_score, ori)`
+**损失**: 只用 `ori` 的损失
+
+---
+
+### 2. SDTPS only
+```yaml
+MODEL.USE_SDTPS: True
+MODEL.USE_DGAF: False
+MODEL.GLOBAL_LOCAL: False
+MODEL.SDTPS_CROSS_ATTN_TYPE: 'attention'
+```
+
+**数据流:**
+```
+Backbone → RGB_cash (B,N,C)
+    ↓
+SDTPS (soft masking) → RGB_enhanced (B,N,C)
+    ↓
+mean pooling → RGB_sdtps (B,C) × 3
+    ↓
+concat → sdtps_feat (B,3C) → Classifier
+```
+
+**输出**: `(sdtps_score, sdtps_feat)`
+**损失**: 只用 `sdtps` 的损失
+**关键**: 不用 GLOBAL_LOCAL，直接 mean pooling
+
+---
+
+### 3. DGAF V3 only
+```yaml
+MODEL.USE_SDTPS: False
+MODEL.USE_DGAF: True
+MODEL.DGAF_VERSION: 'v3'
+MODEL.GLOBAL_LOCAL: False
+```
+
+**数据流:**
+```
+Backbone → RGB_cash (B,N,C) × 3
+    ↓
+DGAF V3 (attention pooling) → dgaf_feat (B,3C)
+    ↓
+Classifier
+```
+
+**输出**: `(dgaf_score, dgaf_feat)`
+**损失**: 只用 `dgaf` 的损失
+**关键**: V3 直接处理 tokens，不需要 GLOBAL_LOCAL
+
+---
+
+### 4. SDTPS + DGAF V1（完整架构）
+```yaml
+MODEL.USE_SDTPS: True
+MODEL.USE_DGAF: True
+MODEL.DGAF_VERSION: 'v1'  # 必须用 V1！
+MODEL.GLOBAL_LOCAL: True  # 必须启用！
+```
+
+**数据流:**
+```
+Backbone → RGB_cash (B,N,C), RGB_global (B,C)
+    ↓
+SDTPS (soft masking) → RGB_enhanced (B,N,C)
+    ↓
+GLOBAL_LOCAL:
+  ├─ pool(RGB_enhanced) → RGB_local (B,C)
+  └─ concat([RGB_global, RGB_local]) → reduce → RGB_sdtps (B,C)
+    ↓
+├─ SDTPS 分支: sdtps_feat = concat([RGB_sdtps, NI_sdtps, TI_sdtps]) → Classifier
+│                                                                    ↓ 损失1
+└─ DGAF V1: dgaf_feat = DGAF(RGB_sdtps, NI_sdtps, TI_sdtps) → Classifier
+                                                             ↓ 损失2
+```
+
+**输出**: `(sdtps_score, sdtps_feat, dgaf_score, dgaf_feat)`
+**损失**: `sdtps` 的损失 + `dgaf` 的损失 (两个)
+**关键**:
+- **必须用 DGAF V1**（因为 GLOBAL_LOCAL 输出 B,C，V3 需要 B,N,C）
+- **必须启用 GLOBAL_LOCAL**（将 SDTPS 输出聚合成 B,C）
+
+---
+
+## 代码逻辑
+
+### 返回值设计
+
+```python
+# modeling/make_model.py:372-400
+
+if self.USE_SDTPS and self.USE_DGAF:
+    # 配置4: SDTPS + DGAF V1
+    # 检查: 必须 DGAF_VERSION='v1' 且 GLOBAL_LOCAL=True
+    return (sdtps_score, sdtps_feat, dgaf_score, dgaf_feat)
+
+elif self.USE_SDTPS:
+    # 配置2: SDTPS only
+    return (sdtps_score, sdtps_feat)
+
+elif self.USE_DGAF:
+    # 配置3: DGAF only
+    return (dgaf_score, dgaf_feat)
+
+else:
+    # 配置1: Baseline
+    return (ori_score, ori)
+```
+
+### 损失计算（自动）
+
+processor.py 会自动处理：
+- 2个输出: 1个损失（baseline, sdtps only, dgaf only）
+- 4个输出: 2个损失（sdtps + dgaf）
+
+---
+
+## 运行脚本
+
+### 一键运行所有12组实验
+```bash
+bash scripts/run_ablation_4arch_12exp.sh
+```
+
+### 手动运行示例
+```bash
+# 配置1: Baseline
+CUDA_VISIBLE_DEVICES=0 python train_net.py \
+    --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml \
+    MODEL.USE_SDTPS False MODEL.USE_DGAF False MODEL.GLOBAL_LOCAL False
+
+# 配置2: SDTPS only
+CUDA_VISIBLE_DEVICES=1 python train_net.py \
+    --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml \
+    MODEL.USE_SDTPS True MODEL.USE_DGAF False MODEL.GLOBAL_LOCAL False
+
+# 配置3: DGAF V3 only
+CUDA_VISIBLE_DEVICES=2 python train_net.py \
+    --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml \
+    MODEL.USE_SDTPS False MODEL.USE_DGAF True MODEL.DGAF_VERSION v3 MODEL.GLOBAL_LOCAL False
+
+# 配置4: SDTPS + DGAF V1 + GLOBAL_LOCAL
+CUDA_VISIBLE_DEVICES=3 python train_net.py \
+    --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml \
+    MODEL.USE_SDTPS True MODEL.USE_DGAF True MODEL.DGAF_VERSION v1 MODEL.GLOBAL_LOCAL True
+```
+
+---
+
+## 关键约束
+
+⚠️ **SDTPS + DGAF 组合的限制**:
+- **必须使用 DGAF_VERSION='v1'** (不能用 V3)
+- **必须启用 GLOBAL_LOCAL=True**
+- 原因: GLOBAL_LOCAL 将 SDTPS 输出从 (B,N,C) 聚合成 (B,C)，V3 需要 (B,N,C) 输入，V1 需要 (B,C) 输入
+
+代码中有检查，如果配置错误会抛出异常：
+```python
+if self.DGAF_VERSION == 'v3':
+    raise ValueError("SDTPS + DGAF 组合必须使用 DGAF_VERSION='v1'")
+if not self.GLOBAL_LOCAL:
+    raise ValueError("SDTPS + DGAF V1 必须启用 GLOBAL_LOCAL")
+```
+
+---
+
+**最后更新**: 2025-12-09
+**Commit**: (待提交)
+
 
 ---
 

@@ -285,49 +285,40 @@ class DeMo(nn.Module):
 
                 # DGAF: 使用双门控自适应融合替代简单 concat
                 if self.USE_DGAF:
+                    # SDTPS + DGAF: 必须使用 V1 版本 + GLOBAL_LOCAL
+                    # 因为需要将 SDTPS 输出聚合成 (B, C)
                     if self.DGAF_VERSION == 'v3':
-                        # V3: 直接输入 tokens，内置 attention pooling
-                        sdtps_feat = self.dgaf(RGB_enhanced, NI_enhanced, TI_enhanced)  # (B, 3C)
-                    else:
-                        # V1: 需要先将 tokens 聚合成 (B, C) 特征
-                        if self.GLOBAL_LOCAL:
-                            # GLOBAL_LOCAL 模式：pool(enhanced) + backbone_global 融合降维
-                            # RGB_enhanced: (B, N, C) → permute → (B, C, N) → pool → (B, C, 1) → squeeze → (B, C)
-                            RGB_local = self.pool(RGB_enhanced.permute(0, 2, 1)).squeeze(-1)  # (B, C)
-                            NI_local = self.pool(NI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
-                            TI_local = self.pool(TI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
+                        raise ValueError("SDTPS + DGAF 组合必须使用 DGAF_VERSION='v1' + GLOBAL_LOCAL=True")
 
-                            # 融合 backbone 的 global 特征和 enhanced 的 pooled local 特征
-                            RGB_sdtps = self.rgb_reduce(torch.cat([RGB_global, RGB_local], dim=-1))  # (B, C)
-                            NI_sdtps = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))     # (B, C)
-                            TI_sdtps = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))     # (B, C)
-                        else:
-                            # 默认方式：mean pooling
-                            RGB_sdtps = RGB_enhanced.mean(dim=1)  # (B, N, C) → (B, C)
-                            NI_sdtps = NI_enhanced.mean(dim=1)
-                            TI_sdtps = TI_enhanced.mean(dim=1)
+                    # 使用 GLOBAL_LOCAL 聚合 SDTPS 输出
+                    if not self.GLOBAL_LOCAL:
+                        raise ValueError("SDTPS + DGAF V1 必须启用 GLOBAL_LOCAL")
 
-                        sdtps_feat = self.dgaf(RGB_sdtps, NI_sdtps, TI_sdtps)  # (B, 3C)
+                    # GLOBAL_LOCAL 模式：pool(enhanced) + backbone_global 融合降维
+                    RGB_local = self.pool(RGB_enhanced.permute(0, 2, 1)).squeeze(-1)  # (B, C)
+                    NI_local = self.pool(NI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
+                    TI_local = self.pool(TI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
+
+                    # 融合 backbone 的 global 特征和 enhanced 的 pooled local 特征
+                    RGB_sdtps = self.rgb_reduce(torch.cat([RGB_global, RGB_local], dim=-1))  # (B, C)
+                    NI_sdtps = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))     # (B, C)
+                    TI_sdtps = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))     # (B, C)
+
+                    # SDTPS 特征的分类（第一个损失）
+                    sdtps_feat = torch.cat([RGB_sdtps, NI_sdtps, TI_sdtps], dim=-1)  # (B, 3C)
+                    sdtps_score = self.classifier_sdtps(self.bottleneck_sdtps(sdtps_feat))
+
+                    # DGAF V1 处理
+                    dgaf_feat = self.dgaf(RGB_sdtps, NI_sdtps, TI_sdtps)  # (B, 3C)
+                    dgaf_score = self.classifier_dgaf(self.bottleneck_dgaf(dgaf_feat))
                 else:
-                    # 不使用 DGAF：简单拼接（也需要聚合特征）
-                    if self.GLOBAL_LOCAL:
-                        # GLOBAL_LOCAL 模式：pool(enhanced) + backbone_global 融合降维
-                        RGB_local = self.pool(RGB_enhanced.permute(0, 2, 1)).squeeze(-1)  # (B, C)
-                        NI_local = self.pool(NI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
-                        TI_local = self.pool(TI_enhanced.permute(0, 2, 1)).squeeze(-1)    # (B, C)
-
-                        RGB_sdtps = self.rgb_reduce(torch.cat([RGB_global, RGB_local], dim=-1))  # (B, C)
-                        NI_sdtps = self.nir_reduce(torch.cat([NI_global, NI_local], dim=-1))     # (B, C)
-                        TI_sdtps = self.tir_reduce(torch.cat([TI_global, TI_local], dim=-1))     # (B, C)
-                    else:
-                        # 默认方式：mean pooling
-                        RGB_sdtps = RGB_enhanced.mean(dim=1)  # (B, N, C) → (B, C)
-                        NI_sdtps = NI_enhanced.mean(dim=1)
-                        TI_sdtps = TI_enhanced.mean(dim=1)
+                    # SDTPS only: 不使用 DGAF，不使用 GLOBAL_LOCAL，直接 mean pooling
+                    RGB_sdtps = RGB_enhanced.mean(dim=1)  # (B, N, C) → (B, C)
+                    NI_sdtps = NI_enhanced.mean(dim=1)
+                    TI_sdtps = TI_enhanced.mean(dim=1)
 
                     sdtps_feat = torch.cat([RGB_sdtps, NI_sdtps, TI_sdtps], dim=-1)  # (B, 3C)
-
-                sdtps_score = self.classifier_sdtps(self.bottleneck_sdtps(sdtps_feat))
+                    sdtps_score = self.classifier_sdtps(self.bottleneck_sdtps(sdtps_feat))
 
             # 单独使用 DGAF（不依赖 SDTPS）：直接处理 backbone 的 patch tokens
             elif self.USE_DGAF:
@@ -369,20 +360,22 @@ class DeMo(nn.Module):
 
             # 构造返回值，可能包含 LIF 损失
             if self.direct:
-                if self.USE_SDTPS:
-                    # SDTPS 分支：返回 SDTPS 特征和原始特征
-                    if self.HDM or self.ATM:
-                        result = (sdtps_score, sdtps_feat, ori_score, ori, loss_moe)
-                        if self.USE_LIF and lif_loss is not None:
-                            result = result + (lif_loss,)
-                    else:
-                        result = (sdtps_score, sdtps_feat, ori_score, ori)
-                        if self.USE_LIF and lif_loss is not None:
-                            result = result + (lif_loss,)
+                if self.USE_SDTPS and self.USE_DGAF:
+                    # SDTPS + DGAF: 返回两个分支的损失
+                    # 注意：这种情况必须使用 DGAF V1 + GLOBAL_LOCAL
+                    result = (sdtps_score, sdtps_feat, dgaf_score, dgaf_feat)
+                    if self.USE_LIF and lif_loss is not None:
+                        result = result + (lif_loss,)
+                    return result
+                elif self.USE_SDTPS:
+                    # SDTPS only: 只返回 SDTPS 特征
+                    result = (sdtps_score, sdtps_feat)
+                    if self.USE_LIF and lif_loss is not None:
+                        result = result + (lif_loss,)
                     return result
                 elif self.USE_DGAF:
-                    # 单独 DGAF 分支：返回 DGAF 特征和原始特征（与 SDTPS 格式一致）
-                    result = (dgaf_score, dgaf_feat, ori_score, ori)
+                    # DGAF only: 只返回 DGAF 特征
+                    result = (dgaf_score, dgaf_feat)
                     if self.USE_LIF and lif_loss is not None:
                         result = result + (lif_loss,)
                     return result
@@ -392,6 +385,7 @@ class DeMo(nn.Module):
                         result = result + (lif_loss,)
                     return result
                 else:
+                    # Baseline: 只返回 ori
                     if self.USE_LIF and lif_loss is not None:
                         return (ori_score, ori, lif_loss)
                     return (ori_score, ori)
