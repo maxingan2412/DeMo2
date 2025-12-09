@@ -1,0 +1,110 @@
+================================================================================
+DeMo2 架构总结 - 2025-12-09
+================================================================================
+
+【核心架构】
+Backbone (ViT-B-16)
+    ↓ (B, 128, 512) patch + (B, 512) global
+SDTPS (多模态稀疏选择)
+    ↓ (B, 128, 512) - soft masked tokens
+DGAF V3 (双门控自适应融合)
+    ↓ (B, 1536)
+Bottleneck + Classifier
+    ↓ predictions
+
+【关键创新】
+
+1. SDTPS - Sparse Token Selection (保持空间结构)
+   ✓ CrossModalAttention: Q/K 反向，global 查询 patches
+   ✓ 逐 head 余弦门控: sigmoid(cosine × scale[h] + bias[h])
+   ✓ 软 masking: 未选中的 token 置零，保持 (B,N,C) 形状
+   ✓ 参数: 4.7M (9 个 Cross-Attention 模块)
+
+2. DGAF V3 - Dual-Gated Adaptive Fusion
+   ✓ 直接处理 (B,N,C) tokens
+   ✓ 内置 attention pooling
+   ✓ 双门控机制融合三模态
+   ✓ 参数: ~3.1M
+
+3. GLOBAL_LOCAL (可选)
+   ✓ 仅对 DGAF V1 生效
+   ✓ pool(enhanced) + backbone_global → reduce
+   ✓ DGAF V3 不需要（设为 False）
+
+【配置参数】
+
+必需参数:
+  USE_SDTPS: True
+  SDTPS_SPARSE_RATIO: 0.7               # 推荐 70%
+  SDTPS_CROSS_ATTN_TYPE: 'attention'    # 推荐 attention
+  SDTPS_CROSS_ATTN_HEADS: 4             # 4 个头
+  USE_DGAF: True
+  DGAF_VERSION: 'v3'                    # 推荐 V3
+  GLOBAL_LOCAL: False                   # V3 不需要
+
+废弃参数（保留兼容）:
+  SDTPS_BETA: 0.25          # 已移除 MLP predictor
+  SDTPS_AGGR_RATIO: 0.5     # 已移除 TokenAggregation
+
+【训练命令】
+
+# RGBNT201 (行人)
+python train_net.py --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml
+
+# RGBNT100 (车辆)
+python train_net.py --config_file configs/RGBNT100/DeMo_SDTPS_DGAF_ablation.yml
+
+# MSVR310 (车辆)
+python train_net.py --config_file configs/MSVR310/DeMo_SDTPS_DGAF_ablation.yml
+
+【文件清单】
+
+核心代码:
+  modeling/sdtps.py               - SDTPS 主文件
+  modeling/sdtps_complete.py      - 完整版（与 sdtps.py 相同）
+  modeling/sdtps_fixed.py         - 备份版
+  modeling/make_model.py          - 模型定义
+  DGAF/dgaf_v3.py                 - DGAF V3 实现
+
+配置文件:
+  configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml      - 推荐
+  configs/RGBNT201/DeMo_SDTPS_DGAF_ablation_test.yml - 测试
+  configs/RGBNT201/DeMo_SDTPS.yml                    - 仅 SDTPS
+  configs/RGBNT100/DeMo_SDTPS_DGAF_ablation.yml
+  configs/MSVR310/DeMo_SDTPS_DGAF_ablation.yml
+
+文档:
+  docs/PROJECT_OVERVIEW.md        - 详细总览（本摘要的完整版）
+  CLAUDE.md                       - Claude 工作指南
+
+【参数统计】
+
+SDTPS 模块:
+  - Q/K projections: 4,727,808 params
+  - Per-head gates (9 modules × 8 params): 72 params
+  - Total: 4,727,880 params
+  - Gate overhead: 0.0015%
+
+完整模型 (SDTPS + DGAF V3):
+  - Backbone: ~86M params (ViT-B-16)
+  - SDTPS: ~4.7M params
+  - DGAF V3: ~3.1M params
+  - Total: ~94M params
+
+【验证状态】
+
+✓ 所有配置文件加载成功
+✓ 模块实例化正常
+✓ Cross-Attention + 逐 head 门控工作正常
+✓ SDTPS 输出 (B, N, C) 验证通过
+✓ DGAF V3 兼容 (B, N, C) 输入
+✓ 训练/推理流程完整
+
+【最近提交】
+
+4f9ef0e - Add comprehensive project overview documentation
+9543901 - Update all SDTPS config files for new architecture
+019ece5 - Implement per-head cosine gating with affine transformation
+
+详细文档见: docs/PROJECT_OVERVIEW.md
+================================================================================
