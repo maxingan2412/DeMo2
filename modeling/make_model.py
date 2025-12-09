@@ -159,8 +159,8 @@ class DeMo(nn.Module):
             self.bottleneck_sdtps.bias.requires_grad_(False)
             self.bottleneck_sdtps.apply(weights_init_kaiming)
 
-        # 单独使用 DGAF（不依赖 SDTPS）：DGAF V3 直接处理 backbone 的 patch tokens
-        if self.USE_DGAF and not self.USE_SDTPS:
+        # 单独使用 DGAF（不依赖 SDTPS）或 SDTPS+DGAF 组合：都需要 DGAF 分类器
+        if self.USE_DGAF:
             self.classifier_dgaf = nn.Linear(3 * self.feat_dim, self.num_classes, bias=False)
             self.classifier_dgaf.apply(weights_init_classifier)
             self.bottleneck_dgaf = nn.BatchNorm1d(3 * self.feat_dim)
