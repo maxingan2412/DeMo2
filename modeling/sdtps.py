@@ -139,7 +139,7 @@ class TokenSparse(nn.Module):
         sparse_ratio: float = 0.6,
         use_gumbel: bool = False,
         gumbel_tau: float = 1.0,
-        use_adaptive_weights: bool = True,
+        use_adaptive_weights: bool = False,
         use_soft_masking: bool = False,  # 专家建议3：使用 soft masking
         soft_mask_tau: float = 0.3,      # Soft masking 温度
     ):
@@ -316,67 +316,76 @@ class MultiModalSDTPS(nn.Module):
     def __init__(
         self,
         embed_dim: int = 512,
-        num_patches: int = 128,  # 兼容参数，未使用
+        num_patches: int = 128,
         sparse_ratio: float = 0.6,
-        aggr_ratio: float = 0.5,  # 兼容参数，未使用
+        aggr_ratio: float = 0.5,
         use_gumbel: bool = False,
         gumbel_tau: float = 1.0,
-        beta: float = 0.25,  # 保留参数用于兼容，但不使用
-        cross_attn_type: str = 'attention',  # 'attention' or 'cosine'
-        cross_attn_heads: int = 4,  # 注意力头数
-        use_cross_attn: bool = None,  # 向后兼容，如果为 None 则从 cross_attn_type 推断
+        beta: float = 0.25,
+        cross_attn_type: str = 'attention',
+        cross_attn_heads: int = 4,
+        use_cross_attn: bool = None,
+        share_cross_attn_weights: bool = False,  # 新增：是否共享 attention 权重
     ):
         super().__init__()
 
         self.embed_dim = embed_dim
         self.sparse_ratio = sparse_ratio
 
-        # 处理兼容性：如果 use_cross_attn 未指定，从 cross_attn_type 推断
+        # 处理兼容性
         if use_cross_attn is None:
             use_cross_attn = (cross_attn_type == 'attention')
         self.use_cross_attn = use_cross_attn
+        self.share_cross_attn_weights = share_cross_attn_weights
 
         # 设置注意力头数
         num_heads = cross_attn_heads
 
-        # 为每个模态创建独立的 TokenSparse 模块（简化版）
-        self.rgb_sparse = TokenSparse(
-            embed_dim=embed_dim,  # 专家建议4
-            sparse_ratio=sparse_ratio,
-            use_gumbel=use_gumbel,
-            gumbel_tau=gumbel_tau,
-        )
+        # TokenSparse 模块
+        self.rgb_sparse = TokenSparse(embed_dim=embed_dim, sparse_ratio=sparse_ratio,
+                                      use_gumbel=use_gumbel, gumbel_tau=gumbel_tau)
+        self.nir_sparse = TokenSparse(embed_dim=embed_dim, sparse_ratio=sparse_ratio,
+                                      use_gumbel=use_gumbel, gumbel_tau=gumbel_tau)
+        self.tir_sparse = TokenSparse(embed_dim=embed_dim, sparse_ratio=sparse_ratio,
+                                      use_gumbel=use_gumbel, gumbel_tau=gumbel_tau)
 
-        self.nir_sparse = TokenSparse(
-            embed_dim=embed_dim,  # 专家建议4
-            sparse_ratio=sparse_ratio,
-            use_gumbel=use_gumbel,
-            gumbel_tau=gumbel_tau,
-        )
-
-        self.tir_sparse = TokenSparse(
-            embed_dim=embed_dim,  # 专家建议4
-            sparse_ratio=sparse_ratio,
-            use_gumbel=use_gumbel,
-            gumbel_tau=gumbel_tau,
-        )
-
-        # Cross-Attention 模块（如果启用）
+        # ========== Cross-Attention 权重共享选项 ==========
         if self.use_cross_attn:
-            # RGB 模态的 Cross-Attention
-            self.rgb_self_attn = CrossModalAttention(embed_dim, num_heads)
-            self.rgb_cross_nir = CrossModalAttention(embed_dim, num_heads)
-            self.rgb_cross_tir = CrossModalAttention(embed_dim, num_heads)
+            if share_cross_attn_weights:
+                # 共享权重：所有模态使用同一个 CrossModalAttention
+                # 参数量：1 个模块（vs 原来的 9 个）
+                print("使用共享 CrossModalAttention 权重（参数量减少 9x）")
+                self.shared_cross_attn = CrossModalAttention(embed_dim, num_heads)
 
-            # NIR 模态的 Cross-Attention
-            self.nir_self_attn = CrossModalAttention(embed_dim, num_heads)
-            self.nir_cross_rgb = CrossModalAttention(embed_dim, num_heads)
-            self.nir_cross_tir = CrossModalAttention(embed_dim, num_heads)
+                # 所有模态的 attention 都指向同一个共享模块
+                self.rgb_self_attn = self.shared_cross_attn
+                self.rgb_cross_nir = self.shared_cross_attn
+                self.rgb_cross_tir = self.shared_cross_attn
 
-            # TIR 模态的 Cross-Attention
-            self.tir_self_attn = CrossModalAttention(embed_dim, num_heads)
-            self.tir_cross_rgb = CrossModalAttention(embed_dim, num_heads)
-            self.tir_cross_nir = CrossModalAttention(embed_dim, num_heads)
+                self.nir_self_attn = self.shared_cross_attn
+                self.nir_cross_rgb = self.shared_cross_attn
+                self.nir_cross_tir = self.shared_cross_attn
+
+                self.tir_self_attn = self.shared_cross_attn
+                self.tir_cross_rgb = self.shared_cross_attn
+                self.tir_cross_nir = self.shared_cross_attn
+            else:
+                # 独立权重：每个模态每个交叉都有独立的 CrossModalAttention
+                # 参数量：9 个独立模块
+                # RGB 模态
+                self.rgb_self_attn = CrossModalAttention(embed_dim, num_heads)
+                self.rgb_cross_nir = CrossModalAttention(embed_dim, num_heads)
+                self.rgb_cross_tir = CrossModalAttention(embed_dim, num_heads)
+
+                # NIR 模态
+                self.nir_self_attn = CrossModalAttention(embed_dim, num_heads)
+                self.nir_cross_rgb = CrossModalAttention(embed_dim, num_heads)
+                self.nir_cross_tir = CrossModalAttention(embed_dim, num_heads)
+
+                # TIR 模态
+                self.tir_self_attn = CrossModalAttention(embed_dim, num_heads)
+                self.tir_cross_rgb = CrossModalAttention(embed_dim, num_heads)
+                self.tir_cross_nir = CrossModalAttention(embed_dim, num_heads)
 
     def _compute_cosine_similarity(
         self,
