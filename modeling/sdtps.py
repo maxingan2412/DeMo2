@@ -142,6 +142,10 @@ class CrossModalAttention(nn.Module):
         attn_logits = (q @ k.transpose(-2, -1)) * self.scale  # (B, num_heads, 1, N)
         attn_logits = attn_logits.squeeze(2)  # (B, num_heads, N)
 
+        # 【关键】在 softmax 之前加入 cosine bias
+        # 加法：cosine 只影响相对概率，不会"一票否决"
+        attn_logits = attn_logits + self.alpha * cosine_sim.unsqueeze(1)  # (B, num_heads, N)
+
         # ========== 专家建议2：温度控制（避免过于尖锐）==========
         # 在 N（patch）维度做 softmax，加温度控制
         attn = (attn_logits / self.temperature).softmax(dim=-1)  # (B, num_heads, N)
@@ -152,14 +156,8 @@ class CrossModalAttention(nn.Module):
         # 可选：应用 dropout（训练时）
         attn = self.attn_drop(attn)
 
-        # 多头平均得到 patch 权重（均值约为 1/N）；乘 N 让均值回到 1，便于残差调制
-        w = attn.mean(dim=1) * N  # (B, N)
-
-        # Cosine 映射到 [0,1]，作为主体信号；alpha 作为调制强度
-        cos01 = (cosine_sim + 1.0) * 0.5  # (B, N)
-
-        # 残差式融合：score = cos + alpha * cos * w
-        score = cos01 + self.alpha * (cos01 * w)  # (B, N)
+        # 多头平均得到最终 score
+        score = attn.mean(dim=1)  # (B, N)
 
         return score
 
