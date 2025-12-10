@@ -735,25 +735,29 @@ class DeMo(nn.Module):
         # ========================================================================
         # 分支4: SDTPS + DGAF (有 SDTPS, 有 DGAF)
         # ========================================================================
+        # 优化：优先使用 V3（避免双重信息损失）
+        # - SDTPS masking + pool + reduce = 双重压缩（V1的问题）
+        # - V3 直接处理 tokens，保留局部细节
+        # ========================================================================
         else:  # self.USE_SDTPS and self.USE_DGAF
-            # Helper function
-            def fuse_global_local(feat_cash, feat_global, pool_layer, reduce_layer):
-                feat_local = pool_layer(feat_cash.permute(0, 2, 1)).squeeze(-1)
-                return reduce_layer(torch.cat([feat_global, feat_local], dim=-1))
-
             # SDTPS: Token selection
             RGB_enh, NI_enh, TI_enh, _, _, _ = self.sdtps(
                 RGB_cash, NI_cash, TI_cash, RGB_global, NI_global, TI_global
             )
 
-            # DGAF: Adaptive fusion (使用 SDTPS 选择后的 tokens)
+            # DGAF: Adaptive fusion
             if self.DGAF_VERSION == 'v3':
-                # V3: process SDTPS-selected tokens
+                # ✅ 推荐：V3 直接处理 SDTPS-selected tokens（保留局部细节）
                 dgaf_feat = self.dgaf(RGB_enh, NI_enh, TI_enh)
+
             else:
-                # V1: process aggregated features
+                # ⚠️ V1: 需要 GLOBAL_LOCAL（双重压缩，效果较差）
                 if not self.GLOBAL_LOCAL:
                     raise ValueError("SDTPS + DGAF V1 requires GLOBAL_LOCAL=True")
+
+                def fuse_global_local(feat_cash, feat_global, pool_layer, reduce_layer):
+                    feat_local = pool_layer(feat_cash.permute(0, 2, 1)).squeeze(-1)
+                    return reduce_layer(torch.cat([feat_global, feat_local], dim=-1))
 
                 RGB_final = fuse_global_local(RGB_enh, RGB_global, self.pool, self.rgb_reduce)
                 NI_final = fuse_global_local(NI_enh, NI_global, self.pool, self.nir_reduce)
