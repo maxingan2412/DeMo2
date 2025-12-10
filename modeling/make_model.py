@@ -788,7 +788,230 @@ __factory_T_type = {
 # ============================================================================
 # DeMo_Parallel: 并行架构，9个分类头
 # ============================================================================
-class DeMo_Parallel(nn.Module):
+    def forward(self, x, label=None, cam_label=None, view_label=None, return_pattern=3, img_path=None):
+        """
+        并行架构 Forward - 9个独立分类头
+
+        Returns:
+            Training: 18个值 (9对 score-feat)
+            Inference: (B, 9C) 拼接特征
+        """
+
+        # Extract inputs
+        RGB, NI, TI = x['RGB'], x['NI'], x['TI']
+        if 'cam_label' in x:
+            cam_label = x['cam_label']
+
+        # Missing modality simulation (inference only)
+        if not self.training:
+            if self.miss_type == 'r': RGB = torch.zeros_like(RGB)
+            elif self.miss_type == 'n': NI = torch.zeros_like(NI)
+            elif self.miss_type == 't': TI = torch.zeros_like(TI)
+            elif self.miss_type == 'rn': RGB, NI = torch.zeros_like(RGB), torch.zeros_like(NI)
+            elif self.miss_type == 'rt': RGB, TI = torch.zeros_like(RGB), torch.zeros_like(TI)
+            elif self.miss_type == 'nt': NI, TI = torch.zeros_like(NI), torch.zeros_like(TI)
+
+        # Backbone
+        RGB_cash, RGB_global = self.BACKBONE(RGB, cam_label=cam_label, view_label=view_label)
+        NI_cash, NI_global = self.BACKBONE(NI, cam_label=cam_label, view_label=view_label)
+        TI_cash, TI_global = self.BACKBONE(TI, cam_label=cam_label, view_label=view_label)
+
+        # ========== 分支1: SDTPS (并行) ==========
+        # 输入: cash + global
+        RGB_enh, NI_enh, TI_enh, _, _, _ = self.sdtps(
+            RGB_cash, NI_cash, TI_cash, RGB_global, NI_global, TI_global
+        )
+        # 输出: 直接 mean pooling
+        feat_sdtps_rgb = RGB_enh.mean(dim=1)  # (B, N, C) -> (B, C)
+        feat_sdtps_nir = NI_enh.mean(dim=1)
+        feat_sdtps_tir = TI_enh.mean(dim=1)
+
+        # ========== 分支2: DGAF V4 (并行) ==========
+        # 输入: 直接用 global features
+        feat_dgaf_rgb, feat_dgaf_nir, feat_dgaf_tir = self.dgaf(
+            RGB_global, NI_global, TI_global
+        )
+
+        # ========== 分支3: Fused (并行) ==========
+        # 固定使用 fuse_global_local
+        def fuse_global_local(feat_cash, feat_global, pool_layer, reduce_layer):
+            feat_local = pool_layer(feat_cash.permute(0, 2, 1)).squeeze(-1)
+            return reduce_layer(torch.cat([feat_global, feat_local], dim=-1))
+
+        feat_fused_rgb = fuse_global_local(RGB_cash, RGB_global, self.pool, self.rgb_reduce)
+        feat_fused_nir = fuse_global_local(NI_cash, NI_global, self.pool, self.nir_reduce)
+        feat_fused_tir = fuse_global_local(TI_cash, TI_global, self.pool, self.tir_reduce)
+
+        # ========== 训练：9个分类头 ==========
+        if self.training:
+            # SDTPS 分支
+            score_sdtps_rgb = self.classifier_sdtps_rgb(self.bottleneck_sdtps_rgb(feat_sdtps_rgb))
+            score_sdtps_nir = self.classifier_sdtps_nir(self.bottleneck_sdtps_nir(feat_sdtps_nir))
+            score_sdtps_tir = self.classifier_sdtps_tir(self.bottleneck_sdtps_tir(feat_sdtps_tir))
+
+            # DGAF 分支
+            score_dgaf_rgb = self.classifier_dgaf_rgb(self.bottleneck_dgaf_rgb(feat_dgaf_rgb))
+            score_dgaf_nir = self.classifier_dgaf_nir(self.bottleneck_dgaf_nir(feat_dgaf_nir))
+            score_dgaf_tir = self.classifier_dgaf_tir(self.bottleneck_dgaf_tir(feat_dgaf_tir))
+
+            # Fused 分支
+            score_fused_rgb = self.classifier_fused_rgb(self.bottleneck_fused_rgb(feat_fused_rgb))
+            score_fused_nir = self.classifier_fused_nir(self.bottleneck_fused_nir(feat_fused_nir))
+            score_fused_tir = self.classifier_fused_tir(self.bottleneck_fused_tir(feat_fused_tir))
+
+            # 返回18个值（9对 score-feat）
+            return (
+                score_sdtps_rgb, feat_sdtps_rgb,
+                score_sdtps_nir, feat_sdtps_nir,
+                score_sdtps_tir, feat_sdtps_tir,
+                score_dgaf_rgb, feat_dgaf_rgb,
+                score_dgaf_nir, feat_dgaf_nir,
+                score_dgaf_tir, feat_dgaf_tir,
+                score_fused_rgb, feat_fused_rgb,
+                score_fused_nir, feat_fused_nir,
+                score_fused_tir, feat_fused_tir,
+            )
+        else:
+            # 推理：拼接所有9个特征
+            return torch.cat([
+                feat_sdtps_rgb, feat_sdtps_nir, feat_sdtps_tir,
+                feat_dgaf_rgb, feat_dgaf_nir, feat_dgaf_tir,
+                feat_fused_rgb, feat_fused_nir, feat_fused_tir,
+            ], dim=-1)  # (B, 9C)
+    """
+    DeMo 并行架构 - 9个独立分类头
+
+    架构：
+        Backbone
+          ├─→ SDTPS  → RGB_enh.mean(), NI_enh.mean(), TI_enh.mean() (3个特征)
+          ├─→ DGAF V4 → RGB_dgaf, NI_dgaf, TI_dgaf (3个特征，输入 global)
+          └─→ Fused   → fuse_global_local(cash, global) × 3 (3个特征)
+
+        总计: 9个特征 → 9个分类头
+
+    简化说明：
+    - Fused 固定使用 fuse_global_local（无 GLOBAL_LOCAL 可选项）
+    - SDTPS 输出直接 mean pooling（不再用 fuse_global_local）
+    - DGAF 输入直接用 global features（不用 fused）
+    """
+
+    def __init__(self, num_classes, cfg, camera_num, view_num, factory):
+        super(DeMo_Parallel, self).__init__()
+
+        # Feature dimension
+        if 'vit_base_patch16_224' in cfg.MODEL.TRANSFORMER_TYPE:
+            self.feat_dim = 768
+        elif 'ViT-B-16' in cfg.MODEL.TRANSFORMER_TYPE:
+            self.feat_dim = 512
+
+        # Backbone
+        self.BACKBONE = build_transformer(num_classes, cfg, camera_num, view_num, factory, feat_dim=self.feat_dim)
+
+        # Basic config
+        self.num_classes = num_classes
+        self.image_size = cfg.INPUT.SIZE_TRAIN
+        self.miss_type = cfg.TEST.MISS
+
+        # ========== Global-Local Fusion layers (固定使用) ==========
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.rgb_reduce = nn.Sequential(
+            nn.LayerNorm(2 * self.feat_dim),
+            nn.Linear(2 * self.feat_dim, self.feat_dim),
+            QuickGELU()
+        )
+        self.nir_reduce = nn.Sequential(
+            nn.LayerNorm(2 * self.feat_dim),
+            nn.Linear(2 * self.feat_dim, self.feat_dim),
+            QuickGELU()
+        )
+        self.tir_reduce = nn.Sequential(
+            nn.LayerNorm(2 * self.feat_dim),
+            nn.Linear(2 * self.feat_dim, self.feat_dim),
+            QuickGELU()
+        )
+
+        # ========== SDTPS Module ==========
+        h, w = cfg.INPUT.SIZE_TRAIN
+        stride_h, stride_w = cfg.MODEL.STRIDE_SIZE
+        num_patches = (h // stride_h) * (w // stride_w)
+
+        self.sdtps = MultiModalSDTPS(
+            embed_dim=self.feat_dim,
+            num_patches=num_patches,
+            sparse_ratio=cfg.MODEL.SDTPS_SPARSE_RATIO,
+            aggr_ratio=cfg.MODEL.SDTPS_AGGR_RATIO,
+            use_gumbel=cfg.MODEL.SDTPS_USE_GUMBEL,
+            gumbel_tau=cfg.MODEL.SDTPS_GUMBEL_TAU,
+            beta=cfg.MODEL.SDTPS_BETA,
+            cross_attn_type=cfg.MODEL.SDTPS_CROSS_ATTN_TYPE,
+            cross_attn_heads=cfg.MODEL.SDTPS_CROSS_ATTN_HEADS,
+        )
+
+        # ========== DGAF V4 Module (输出3个独立特征) ==========
+        from modeling.dual_gated_fusion import DualGatedAdaptiveFusionV4
+        self.dgaf = DualGatedAdaptiveFusionV4(
+            feat_dim=self.feat_dim,
+            tau=cfg.MODEL.DGAF_TAU,
+            init_alpha=cfg.MODEL.DGAF_INIT_ALPHA,
+        )
+
+        # ========== 9个分类头 + BatchNorm ==========
+        # SDTPS 分支（3个）
+        self.classifier_sdtps_rgb = nn.Linear(self.feat_dim, num_classes, bias=False)
+        self.classifier_sdtps_rgb.apply(weights_init_classifier)
+        self.bottleneck_sdtps_rgb = nn.BatchNorm1d(self.feat_dim)
+        self.bottleneck_sdtps_rgb.bias.requires_grad_(False)
+        self.bottleneck_sdtps_rgb.apply(weights_init_kaiming)
+
+        self.classifier_sdtps_nir = nn.Linear(self.feat_dim, num_classes, bias=False)
+        self.classifier_sdtps_nir.apply(weights_init_classifier)
+        self.bottleneck_sdtps_nir = nn.BatchNorm1d(self.feat_dim)
+        self.bottleneck_sdtps_nir.bias.requires_grad_(False)
+        self.bottleneck_sdtps_nir.apply(weights_init_kaiming)
+
+        self.classifier_sdtps_tir = nn.Linear(self.feat_dim, num_classes, bias=False)
+        self.classifier_sdtps_tir.apply(weights_init_classifier)
+        self.bottleneck_sdtps_tir = nn.BatchNorm1d(self.feat_dim)
+        self.bottleneck_sdtps_tir.bias.requires_grad_(False)
+        self.bottleneck_sdtps_tir.apply(weights_init_kaiming)
+
+        # DGAF 分支（3个）
+        self.classifier_dgaf_rgb = nn.Linear(self.feat_dim, num_classes, bias=False)
+        self.classifier_dgaf_rgb.apply(weights_init_classifier)
+        self.bottleneck_dgaf_rgb = nn.BatchNorm1d(self.feat_dim)
+        self.bottleneck_dgaf_rgb.bias.requires_grad_(False)
+        self.bottleneck_dgaf_rgb.apply(weights_init_kaiming)
+
+        self.classifier_dgaf_nir = nn.Linear(self.feat_dim, num_classes, bias=False)
+        self.classifier_dgaf_nir.apply(weights_init_classifier)
+        self.bottleneck_dgaf_nir = nn.BatchNorm1d(self.feat_dim)
+        self.bottleneck_dgaf_nir.bias.requires_grad_(False)
+        self.bottleneck_dgaf_nir.apply(weights_init_kaiming)
+
+        self.classifier_dgaf_tir = nn.Linear(self.feat_dim, num_classes, bias=False)
+        self.classifier_dgaf_tir.apply(weights_init_classifier)
+        self.bottleneck_dgaf_tir = nn.BatchNorm1d(self.feat_dim)
+        self.bottleneck_dgaf_tir.bias.requires_grad_(False)
+        self.bottleneck_dgaf_tir.apply(weights_init_kaiming)
+
+        # Fused 分支（3个）
+        self.classifier_fused_rgb = nn.Linear(self.feat_dim, num_classes, bias=False)
+        self.classifier_fused_rgb.apply(weights_init_classifier)
+        self.bottleneck_fused_rgb = nn.BatchNorm1d(self.feat_dim)
+        self.bottleneck_fused_rgb.bias.requires_grad_(False)
+        self.bottleneck_fused_rgb.apply(weights_init_kaiming)
+
+        self.classifier_fused_nir = nn.Linear(self.feat_dim, num_classes, bias=False)
+        self.classifier_fused_nir.apply(weights_init_classifier)
+        self.bottleneck_fused_nir = nn.BatchNorm1d(self.feat_dim)
+        self.bottleneck_fused_nir.bias.requires_grad_(False)
+        self.bottleneck_fused_nir.apply(weights_init_kaiming)
+
+        self.classifier_fused_tir = nn.Linear(self.feat_dim, num_classes, bias=False)
+        self.classifier_fused_tir.apply(weights_init_classifier)
+        self.bottleneck_fused_tir = nn.BatchNorm1d(self.feat_dim)
+        self.bottleneck_fused_tir.bias.requires_grad_(False)
+        self.bottleneck_fused_tir.apply(weights_init_kaiming)
     """
     DeMo 并行架构 - 3条分支并行，9个分类头
 
