@@ -1016,10 +1016,31 @@ class DeMo_Parallel(nn.Module):
 
 
 __factory_T_type = {
-    ```
-    Backbone
-      ├─→ SDTPS (并行) → RGB_enh, NI_enh, TI_enh (3个特征)
-      ├─→ DGAF (并行) → RGB_dgaf, NI_dgaf, TI_dgaf (3个独立特征)
+    'vit_base_patch16_224': vit_base_patch16_224,
+    'deit_base_patch16_224': vit_base_patch16_224,
+    'vit_small_patch16_224': vit_small_patch16_224,
+    'deit_small_patch16_224': deit_small_patch16_224,
+    't2t_vit_t_14': t2t_vit_t_14,
+    't2t_vit_t_24': t2t_vit_t_24,
+}
+
+
+def make_model(cfg, num_class, camera_num, view_num=0):
+    # 架构选择
+    model_arch = cfg.MODEL.get('ARCH', 'DeMo') if hasattr(cfg.MODEL, 'ARCH') else 'DeMo'
+
+    if model_arch == 'DeMo_Parallel':
+        model = DeMo_Parallel(num_class, cfg, camera_num, view_num, __factory_T_type)
+        print('===========Building DeMo_Parallel (9 heads)===========')
+    elif model_arch == 'DeMoBeiyong':
+        model = DeMoBeiyong(num_class, cfg, camera_num, view_num, __factory_T_type)
+        print('===========Building DeMoBeiyong (legacy)===========')
+    else:
+        model = DeMo(num_class, cfg, camera_num, view_num, __factory_T_type)
+        print('===========Building DeMo===========')
+
+    return model
+
       └─→ Fused → RGB_fused, NI_fused, TI_fused (3个特征)
 
     总计: 9个特征 → 9个分类头 → 9个分数
