@@ -18,52 +18,42 @@ from typing import Tuple
 
 class CrossModalAttention(nn.Module):
     """
-    Cross-Attention 模块（极简版：加法融合）
+    Cross-Attention 模块 - 极简单头版本
 
     核心设计：
     1. Q/K 反向：global 作为 Query，patches 作为 Key
     2. Cosine 作为 bias 加到 attention logits（加法融合）
-    3. 单次 softmax，输出天然归一化
-    4. 零额外可学习参数（仅 Q/K 投影）
+    3. 单头：无需分割和平均，最简单
+    4. 零额外参数：仅 Q/K 投影
 
     计算流程：
-    1. 余弦相似度：cos_sim = normalize(patches) @ normalize(global)^T  # (B, N)
-    2. Q/K 投影：Q = W_q @ global, K = W_k @ patches
-    3. 加法融合：logits = Q @ K^T / sqrt(d) + alpha * cos_sim
-    4. Softmax + 多头平均：score = mean(softmax(logits), dim=heads)  # (B, N)
-
-    优势：
-    - 极简：零额外可学习参数，Q/K 投影自己学习平衡
-    - 稳定：无需担心参数初始化问题
-    - 数学性质好：输出是概率分布（和为 1）
-    - cosine 只是"推一把"，不会一票否决
+    1. Q = W_q @ global: (B, 1, C)
+    2. K = W_k @ patches: (B, N, C)
+    3. logits = Q @ K^T / sqrt(C) + alpha * cosine
+    4. score = softmax(logits): (B, N)
 
     Args:
         embed_dim: 特征维度
-        num_heads: 注意力头数
-        alpha: cosine bias 强度（固定超参数，默认 1.0）
+        alpha: cosine bias 强度（固定，默认 1.0）
         attn_drop: dropout 比率
     """
 
     def __init__(
         self,
         embed_dim: int = 512,
-        num_heads: int = 4,
+        num_heads: int = 1,  # 保留兼容性，但固定为1
         alpha: float = 1.0,
         attn_drop: float = 0.0,
     ):
         super().__init__()
 
         self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.head_dim = embed_dim // num_heads
-        self.scale = self.head_dim ** -0.5
-        self.alpha = alpha  # 固定超参数，非可学习
+        self.scale = embed_dim ** -0.5  # 单头：直接用 embed_dim
+        self.alpha = alpha  # 固定超参数
 
-        # Q, K 投影（Q 用于 global，K 用于 patches）
+        # Q, K 投影
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=True)
         self.k_proj = nn.Linear(embed_dim, embed_dim, bias=True)
-
         self.attn_drop = nn.Dropout(attn_drop)
 
         self._init_weights()
@@ -77,41 +67,43 @@ class CrossModalAttention(nn.Module):
 
     def forward(
         self,
-        patches: torch.Tensor,       # (B, N, C) - 键（被检索）
-        global_feat: torch.Tensor,   # (B, C) or (B, 1, C) - 查询（检索者）
-        cosine_sim: torch.Tensor,    # (B, N) - 预计算的余弦相似度
+        patches: torch.Tensor,       # (B, N, C)
+        global_feat: torch.Tensor,   # (B, C) or (B, 1, C)
+        cosine_sim: torch.Tensor,    # (B, N)
     ) -> torch.Tensor:
         """
-        计算 Cross-Attention score（加法融合）
+        单头 Cross-Attention（极简版）
 
         Args:
-            patches: (B, N, C) - patch tokens 作为 Key
-            global_feat: (B, C) or (B, 1, C) - global feature 作为 Query
+            patches: (B, N, C) - patch tokens
+            global_feat: (B, C) or (B, 1, C) - global feature
             cosine_sim: (B, N) - 预计算的余弦相似度
 
         Returns:
-            score: (B, N) - 每个 patch 的重要性得分（概率分布，和为 1）
+            score: (B, N) - patch 重要性得分（概率分布）
         """
         B, N, C = patches.shape
 
         if global_feat.dim() == 2:
             global_feat = global_feat.unsqueeze(1)  # (B, C) -> (B, 1, C)
 
-        # Q/K 投影
-        q = self.q_proj(global_feat).reshape(B, 1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        k = self.k_proj(patches).reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        # q: (B, num_heads, 1, head_dim), k: (B, num_heads, N, head_dim)
+        # ========== 单头 Q/K 投影（无分割）==========
+        q = self.q_proj(global_feat)  # (B, 1, C)
+        k = self.k_proj(patches)      # (B, N, C)
 
-        # 加法融合：attention logits + cosine bias
-        attn_logits = (q @ k.transpose(-2, -1)) * self.scale  # (B, num_heads, 1, N)
-        attn_logits = attn_logits.squeeze(2) + self.alpha * cosine_sim.unsqueeze(1)  # (B, num_heads, N)
+        # ========== Attention + Cosine Bias ==========
+        # Q @ K^T / sqrt(C)
+        attn_logits = (q @ k.transpose(-2, -1)) * self.scale  # (B, 1, N)
+        attn_logits = attn_logits.squeeze(1)  # (B, N)
 
-        # Softmax + Dropout
-        attn = attn_logits.softmax(dim=-1)  # (B, num_heads, N)
-        attn = self.attn_drop(attn)
+        # 加入 cosine bias（加法融合）
+        attn_logits = attn_logits + self.alpha * cosine_sim  # (B, N)
 
-        # 多头平均
-        return attn.mean(dim=1)  # (B, N)
+        # Softmax（输出自动归一化）
+        score = attn_logits.softmax(dim=-1)  # (B, N)
+        score = self.attn_drop(score)
+
+        return score
 
 
 class TokenSparse(nn.Module):
