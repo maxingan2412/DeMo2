@@ -5,6 +5,8 @@ _C = CN()
 # MODEL
 # -----------------------------------------------------------------------------
 _C.MODEL = CN()
+# Model architecture selection: 'DeMo' (default), 'DeMo_Parallel', 'DeMoBeiyong'
+_C.MODEL.ARCH = 'DeMo'
 # Using cuda or cpu for training
 _C.MODEL.DEVICE = "cuda"
 # ID number of GPU
@@ -58,10 +60,15 @@ _C.MODEL.DGAF_VERSION = 'v3' # 'v1' (需要mean后输入), 'v3' (直接接受tok
 _C.MODEL.DGAF_TAU = 1.0 # temperature for entropy gate (lower = sharper)
 _C.MODEL.DGAF_INIT_ALPHA = 0.5 # initial value for alpha (balance IEG and MIG)
 _C.MODEL.DGAF_NUM_HEADS = 8 # number of attention heads for V3's attention pooling
+_C.MODEL.DGAF_LOSS_WEIGHT = 1.0 # DGAF branch loss weight (for DeMo_Parallel ablation)
 # MultiModal-SACR: 多模态交互版本的 SACR
 # 将三个模态沿 token 维度拼接，在 SACR 中进行跨模态交互，然后拆分
 _C.MODEL.USE_MULTIMODAL_SACR = False # whether to use MultiModal SACR after SDTPS
 _C.MODEL.MULTIMODAL_SACR_VERSION = 'v1' # 'v1' or 'v2' (v2 has cross-modal attention)
+# DeMo_Parallel Fused branch loss weight
+_C.MODEL.FUSED_LOSS_WEIGHT = 0.5  # Fused branch loss weight (auxiliary supervision)
+# SDTPS CrossModalAttention weight sharing
+_C.MODEL.SDTPS_SHARE_CROSS_ATTN = False  # Per-modality sharing (3 modules, -67% params)
 # If train with label smooth, options: 'on', 'off'
 _C.MODEL.IF_LABELSMOOTH = 'on'
 # If train with the contact feature
