@@ -4,6 +4,17 @@
 # 测试 SDTPS_CROSS_ATTN_TYPE='attention' 模式
 # 4个消融实验，4个GPU并行
 # ============================================================================
+# 用法:
+#   bash run_ablation_cross_attention_201.sh [实验标识]
+#
+# 示例:
+#   bash run_ablation_cross_attention_201.sh 实验1
+#   bash run_ablation_cross_attention_201.sh shared_weights
+#   bash run_ablation_cross_attention_201.sh  # 默认无标识
+# ============================================================================
+
+# 获取命令行参数（可选的实验标识）
+EXP_TAG="${1:-}"
 
 # Config file
 CONFIG_RGBNT201="configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml"
@@ -11,13 +22,20 @@ CONFIG_RGBNT201="configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml"
 # Get timestamp for folder name
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
-# Create experiment folder
-EXP_DIR_201="logs/RGBNT201_cross_attn_${TIMESTAMP}"
+# 构建实验目录名（包含可选标识）
+if [ -n "$EXP_TAG" ]; then
+    EXP_DIR_201="logs/RGBNT201_cross_attn_${EXP_TAG}_${TIMESTAMP}"
+else
+    EXP_DIR_201="logs/RGBNT201_cross_attn_${TIMESTAMP}"
+fi
 mkdir -p ${EXP_DIR_201}
 
 echo "=============================================================================="
 echo "Cross-Attention Ablation Experiments - RGBNT201"
 echo "(SDTPS_CROSS_ATTN_TYPE='attention')"
+if [ -n "$EXP_TAG" ]; then
+    echo "实验标识: ${EXP_TAG}"
+fi
 echo "=============================================================================="
 echo "RGBNT201 logs: ${EXP_DIR_201}"
 echo "=============================================================================="
