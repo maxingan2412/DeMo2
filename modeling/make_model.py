@@ -606,14 +606,14 @@ class DeMo(nn.Module):
 
     def forward(self, x, label=None, cam_label=None, view_label=None, return_pattern=3, img_path=None):
         """
-        Forward pass - simplified version
+        Forward pass - 完全分离的4个独立分支
 
         Args:
             x: dict with keys 'RGB', 'NI', 'TI'
             label: class labels (for training)
             cam_label: camera labels
             view_label: view labels
-            return_pattern: 1=ori, 2=moe, 3=combined (for evaluation)
+            return_pattern: for evaluation (not used in simplified version)
             img_path: image paths (for evaluation)
 
         Returns:
@@ -621,10 +621,12 @@ class DeMo(nn.Module):
             Inference: feat tensor
         """
 
-        # ========== 1. Extract modality inputs ==========
+        # Extract inputs and handle camera label
         RGB, NI, TI = x['RGB'], x['NI'], x['TI']
+        if 'cam_label' in x:
+            cam_label = x['cam_label']
 
-        # ========== 2. Missing modality simulation (inference only) ==========
+        # Missing modality simulation (inference only)
         if not self.training:
             if self.miss_type == 'r': RGB = torch.zeros_like(RGB)
             elif self.miss_type == 'n': NI = torch.zeros_like(NI)
@@ -633,27 +635,40 @@ class DeMo(nn.Module):
             elif self.miss_type == 'rt': RGB, TI = torch.zeros_like(RGB), torch.zeros_like(TI)
             elif self.miss_type == 'nt': NI, TI = torch.zeros_like(NI), torch.zeros_like(TI)
 
-        if 'cam_label' in x:
-            cam_label = x['cam_label']
-
-        # ========== 3. Backbone feature extraction ==========
+        # Backbone feature extraction
         RGB_cash, RGB_global = self.BACKBONE(RGB, cam_label=cam_label, view_label=view_label)
         NI_cash, NI_global = self.BACKBONE(NI, cam_label=cam_label, view_label=view_label)
         TI_cash, TI_global = self.BACKBONE(TI, cam_label=cam_label, view_label=view_label)
-        # RGB_cash/NI_cash/TI_cash: (B, N, C) - patch features
-        # RGB_global/NI_global/TI_global: (B, C) - global features
 
-        # ========== 4. Module Processing ==========
+        # ========================================================================
+        # 分支1: Baseline (无 SDTPS, 无 DGAF)
+        # ========================================================================
+        if not self.USE_SDTPS and not self.USE_DGAF:
+            # 直接拼接全局特征
+            ori_feat = torch.cat([RGB_global, NI_global, TI_global], dim=-1)
 
-        # Helper: fuse global + pooled local features
-        def fuse_global_local(feat_cash, feat_global, pool_layer, reduce_layer):
-            feat_local = pool_layer(feat_cash.permute(0, 2, 1)).squeeze(-1)
-            return reduce_layer(torch.cat([feat_global, feat_local], dim=-1))
+            if self.training:
+                if self.direct:
+                    ori_score = self.classifier(self.bottleneck(ori_feat))
+                    return (ori_score, ori_feat)
+                else:
+                    RGB_score = self.classifier_r(self.bottleneck_r(RGB_global))
+                    NI_score = self.classifier_n(self.bottleneck_n(NI_global))
+                    TI_score = self.classifier_t(self.bottleneck_t(TI_global))
+                    return (RGB_score, RGB_global, NI_score, NI_global, TI_score, TI_global)
+            else:
+                return ori_feat
 
-        # --- A. SDTPS Path ---
-        sdtps_feat, sdtps_score = None, None
-        if self.USE_SDTPS:
-            # Token selection
+        # ========================================================================
+        # 分支2: SDTPS Only (有 SDTPS, 无 DGAF)
+        # ========================================================================
+        elif self.USE_SDTPS and not self.USE_DGAF:
+            # Helper function
+            def fuse_global_local(feat_cash, feat_global, pool_layer, reduce_layer):
+                feat_local = pool_layer(feat_cash.permute(0, 2, 1)).squeeze(-1)
+                return reduce_layer(torch.cat([feat_global, feat_local], dim=-1))
+
+            # SDTPS: Token selection
             RGB_enh, NI_enh, TI_enh, _, _, _ = self.sdtps(
                 RGB_cash, NI_cash, TI_cash, RGB_global, NI_global, TI_global
             )
@@ -670,96 +685,92 @@ class DeMo(nn.Module):
 
             sdtps_feat = torch.cat([RGB_final, NI_final, TI_final], dim=-1)
 
-            # Classifier (only when DGAF is not used)
-            if self.training and not self.USE_DGAF:
-                sdtps_score = self.classifier_sdtps(self.bottleneck_sdtps(sdtps_feat))
-
-        # --- B. DGAF Path ---
-        dgaf_feat, dgaf_score = None, None
-        if self.USE_DGAF:
-            if self.DGAF_VERSION == 'v3':
-                # V3: process patch tokens
-                if self.USE_SDTPS:
-                    dgaf_feat = self.dgaf(RGB_enh, NI_enh, TI_enh)
-                else:
-                    dgaf_feat = self.dgaf(RGB_cash, NI_cash, TI_cash)
-            else:
-                # V1: process aggregated features
-                if self.USE_SDTPS:
-                    if not self.GLOBAL_LOCAL:
-                        raise ValueError("SDTPS + DGAF V1 requires GLOBAL_LOCAL=True")
-                    dgaf_feat = self.dgaf(RGB_final, NI_final, TI_final)
-                else:
-                    if self.GLOBAL_LOCAL:
-                        r_in = fuse_global_local(RGB_cash, RGB_global, self.pool, self.rgb_reduce)
-                        n_in = fuse_global_local(NI_cash, NI_global, self.pool, self.nir_reduce)
-                        t_in = fuse_global_local(TI_cash, TI_global, self.pool, self.tir_reduce)
-                    else:
-                        r_in, n_in, t_in = RGB_global, NI_global, TI_global
-                    dgaf_feat = self.dgaf(r_in, n_in, t_in)
-
-            # Classifier
             if self.training:
-                dgaf_score = self.classifier_dgaf(self.bottleneck_dgaf(dgaf_feat))
-
-        # --- C. Baseline Path ---
-        ori = torch.cat([RGB_global, NI_global, TI_global], dim=-1)
-        ori_score = None
-
-        if self.training:
-            if self.direct:
-                ori_score = self.classifier(self.bottleneck(ori))
-            else:
-                RGB_ori_score = self.classifier_r(self.bottleneck_r(RGB_global))
-                NI_ori_score = self.classifier_n(self.bottleneck_n(NI_global))
-                TI_ori_score = self.classifier_t(self.bottleneck_t(TI_global))
-
-        # ========== 5. Return Logic ==========
-
-        if self.training:
-            # Training: return (score, feat) pairs
-            if self.USE_SDTPS and self.USE_DGAF:
-                # SDTPS+DGAF: only DGAF output
-                if self.direct:
-                    return (dgaf_score, dgaf_feat)
-                else:
-                    return (dgaf_score, dgaf_feat, RGB_ori_score, RGB_global,
-                            NI_ori_score, NI_global, TI_ori_score, TI_global)
-
-            elif self.USE_SDTPS:
-                # SDTPS-only
+                sdtps_score = self.classifier_sdtps(self.bottleneck_sdtps(sdtps_feat))
                 if self.direct:
                     return (sdtps_score, sdtps_feat)
                 else:
-                    return (sdtps_score, sdtps_feat, RGB_ori_score, RGB_global,
-                            NI_ori_score, NI_global, TI_ori_score, TI_global)
+                    RGB_score = self.classifier_r(self.bottleneck_r(RGB_global))
+                    NI_score = self.classifier_n(self.bottleneck_n(NI_global))
+                    TI_score = self.classifier_t(self.bottleneck_t(TI_global))
+                    return (sdtps_score, sdtps_feat, RGB_score, RGB_global, NI_score, NI_global, TI_score, TI_global)
+            else:
+                return sdtps_feat
 
-            elif self.USE_DGAF:
-                # DGAF-only
+        # ========================================================================
+        # 分支3: DGAF Only (无 SDTPS, 有 DGAF)
+        # ========================================================================
+        elif not self.USE_SDTPS and self.USE_DGAF:
+            # Helper function
+            def fuse_global_local(feat_cash, feat_global, pool_layer, reduce_layer):
+                feat_local = pool_layer(feat_cash.permute(0, 2, 1)).squeeze(-1)
+                return reduce_layer(torch.cat([feat_global, feat_local], dim=-1))
+
+            # DGAF: Adaptive fusion
+            if self.DGAF_VERSION == 'v3':
+                # V3: process patch tokens
+                dgaf_feat = self.dgaf(RGB_cash, NI_cash, TI_cash)
+            else:
+                # V1: process aggregated features
+                if self.GLOBAL_LOCAL:
+                    RGB_in = fuse_global_local(RGB_cash, RGB_global, self.pool, self.rgb_reduce)
+                    NI_in = fuse_global_local(NI_cash, NI_global, self.pool, self.nir_reduce)
+                    TI_in = fuse_global_local(TI_cash, TI_global, self.pool, self.tir_reduce)
+                else:
+                    RGB_in, NI_in, TI_in = RGB_global, NI_global, TI_global
+                dgaf_feat = self.dgaf(RGB_in, NI_in, TI_in)
+
+            if self.training:
+                dgaf_score = self.classifier_dgaf(self.bottleneck_dgaf(dgaf_feat))
                 if self.direct:
                     return (dgaf_score, dgaf_feat)
                 else:
-                    return (dgaf_score, dgaf_feat, RGB_ori_score, RGB_global,
-                            NI_ori_score, NI_global, TI_ori_score, TI_global)
-
+                    RGB_score = self.classifier_r(self.bottleneck_r(RGB_global))
+                    NI_score = self.classifier_n(self.bottleneck_n(NI_global))
+                    TI_score = self.classifier_t(self.bottleneck_t(TI_global))
+                    return (dgaf_score, dgaf_feat, RGB_score, RGB_global, NI_score, NI_global, TI_score, TI_global)
             else:
-                # Baseline
+                return dgaf_feat
+
+        # ========================================================================
+        # 分支4: SDTPS + DGAF (有 SDTPS, 有 DGAF)
+        # ========================================================================
+        else:  # self.USE_SDTPS and self.USE_DGAF
+            # Helper function
+            def fuse_global_local(feat_cash, feat_global, pool_layer, reduce_layer):
+                feat_local = pool_layer(feat_cash.permute(0, 2, 1)).squeeze(-1)
+                return reduce_layer(torch.cat([feat_global, feat_local], dim=-1))
+
+            # SDTPS: Token selection
+            RGB_enh, NI_enh, TI_enh, _, _, _ = self.sdtps(
+                RGB_cash, NI_cash, TI_cash, RGB_global, NI_global, TI_global
+            )
+
+            # DGAF: Adaptive fusion (使用 SDTPS 选择后的 tokens)
+            if self.DGAF_VERSION == 'v3':
+                # V3: process SDTPS-selected tokens
+                dgaf_feat = self.dgaf(RGB_enh, NI_enh, TI_enh)
+            else:
+                # V1: process aggregated features
+                if not self.GLOBAL_LOCAL:
+                    raise ValueError("SDTPS + DGAF V1 requires GLOBAL_LOCAL=True")
+
+                RGB_final = fuse_global_local(RGB_enh, RGB_global, self.pool, self.rgb_reduce)
+                NI_final = fuse_global_local(NI_enh, NI_global, self.pool, self.nir_reduce)
+                TI_final = fuse_global_local(TI_enh, TI_global, self.pool, self.tir_reduce)
+                dgaf_feat = self.dgaf(RGB_final, NI_final, TI_final)
+
+            if self.training:
+                dgaf_score = self.classifier_dgaf(self.bottleneck_dgaf(dgaf_feat))
                 if self.direct:
-                    return (ori_score, ori)
+                    return (dgaf_score, dgaf_feat)
                 else:
-                    return (RGB_ori_score, RGB_global, NI_ori_score, NI_global,
-                            TI_ori_score, TI_global)
-
-        else:
-            # Inference: return features only
-            if self.USE_SDTPS and self.USE_DGAF:
-                return dgaf_feat
-            elif self.USE_SDTPS:
-                return sdtps_feat
-            elif self.USE_DGAF:
-                return dgaf_feat
+                    RGB_score = self.classifier_r(self.bottleneck_r(RGB_global))
+                    NI_score = self.classifier_n(self.bottleneck_n(NI_global))
+                    TI_score = self.classifier_t(self.bottleneck_t(TI_global))
+                    return (dgaf_score, dgaf_feat, RGB_score, RGB_global, NI_score, NI_global, TI_score, TI_global)
             else:
-                return ori
+                return dgaf_feat
 __factory_T_type = {
     'vit_base_patch16_224': vit_base_patch16_224,
     'deit_base_patch16_224': vit_base_patch16_224,
