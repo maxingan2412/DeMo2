@@ -18,55 +18,39 @@ from typing import Tuple
 
 class CrossModalAttention(nn.Module):
     """
-    Cross-Attention 模块（带逐 head 余弦门控）
+    Cross-Attention 模块（极简版：加法融合）
 
     核心设计：
     1. Q/K 反向：global 作为 Query，patches 作为 Key
-    2. 逐 head 余弦门控：每个 head 学习独立的 scale 和 bias
-    3. 在多头平均前进行门控，保留多头差异性
-    4. 在 N（patch）维度做 softmax
+    2. Cosine 作为 bias 加到 attention logits（加法融合）
+    3. 单次 softmax，输出天然归一化
+    4. 零额外可学习参数（仅 Q/K 投影）
 
     计算流程：
     1. 余弦相似度：cos_sim = normalize(patches) @ normalize(global)^T  # (B, N)
-    2. Q/K 投影 + Attention：
-       Q = W_q @ global, K = W_k @ patches
-       attn = softmax(Q @ K^T / sqrt(d), dim=N)  # (B, num_heads, N)
-    3. 逐 head 余弦门控：
-       gate_logits = cosine * scale[h] + bias[h]  # (B, num_heads, N)
-       [可选] gate_logits = LayerNorm(gate_logits)  # 稳定尺度
-       gate = sigmoid(gate_logits)  # (B, num_heads, N)
-    4. 门控注意力：
-       attn_gated = attn * gate  # 逐元素点乘
-       [可选] attn_gated = renormalize(attn_gated)  # 保持概率性
-    5. 多头平均：
-       score = mean(attn_gated, dim=heads)  # (B, N)
+    2. Q/K 投影：Q = W_q @ global, K = W_k @ patches
+    3. 加法融合：logits = Q @ K^T / sqrt(d) + alpha * cos_sim
+    4. Softmax + 多头平均：score = mean(softmax(logits), dim=heads)  # (B, N)
 
     优势：
-    - 参数极少：num_heads × 2 个参数（如 4 heads = 8 params）
-    - 逐 head 自适应：每个 head 学习不同的门控策略
-    - 物理意义清晰：scale 控制温度，bias 控制偏置
-    - 简洁高效：基础版本不需要额外的 LayerNorm
+    - 极简：零额外可学习参数，Q/K 投影自己学习平衡
+    - 稳定：无需担心参数初始化问题
+    - 数学性质好：输出是概率分布（和为 1）
+    - cosine 只是"推一把"，不会一票否决
 
-    改进选项：
-    - use_gate_norm: 在 sigmoid 前使用 LayerNorm 稳定逐 head 尺度
-    - renormalize_attn: 在门控后重新归一化，保持权重和为 1
-
-    初始化策略（避免过稀疏）：
-    - gate_scale = 0.5 (较小，使曲线平缓)
-    - gate_bias = 0.5 (正值，避免门控值过低)
-    - 初始门控值：sigmoid(0.5*cosine+0.5) ∈ [0.62, 0.73] (保守)
+    Args:
+        embed_dim: 特征维度
+        num_heads: 注意力头数
+        alpha: cosine bias 强度（固定超参数，默认 1.0）
+        attn_drop: dropout 比率
     """
 
     def __init__(
         self,
         embed_dim: int = 512,
         num_heads: int = 4,
-        qkv_bias: bool = True,
+        alpha: float = 1.0,
         attn_drop: float = 0.0,
-        use_gate_norm: bool = False,
-        renormalize_attn: bool = False,
-        cosine_bias_alpha: float = 1.0,  # Cosine bias 强度
-        attn_temperature: float = 1.0,   # Attention 温度
     ):
         super().__init__()
 
@@ -74,19 +58,13 @@ class CrossModalAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
         self.scale = self.head_dim ** -0.5
-        self.renormalize_attn = renormalize_attn
+        self.alpha = alpha  # 固定超参数，非可学习
 
         # Q, K 投影（Q 用于 global，K 用于 patches）
-        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=qkv_bias)
-        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=qkv_bias)
+        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=True)
+        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=True)
 
         self.attn_drop = nn.Dropout(attn_drop)
-
-        # ========== 专家建议1+2：Cosine bias + Temperature ==========
-        # 可学习的 cosine bias 强度（避免"一票否决"）
-        self.alpha = nn.Parameter(torch.tensor(cosine_bias_alpha))
-        # 可学习的 attention 温度（控制峰值）
-        self.temperature = nn.Parameter(torch.tensor(attn_temperature))
 
         self._init_weights()
 
@@ -94,73 +72,46 @@ class CrossModalAttention(nn.Module):
         """初始化权重"""
         nn.init.xavier_uniform_(self.q_proj.weight)
         nn.init.xavier_uniform_(self.k_proj.weight)
-        if self.q_proj.bias is not None:
-            nn.init.zeros_(self.q_proj.bias)
-        if self.k_proj.bias is not None:
-            nn.init.zeros_(self.k_proj.bias)
-
-        # ========== 专家建议：参数初始化 ==========
-        # alpha 和 temperature 通过 __init__ 参数传入，已在定义时设置
-        # 无需额外初始化
+        nn.init.zeros_(self.q_proj.bias)
+        nn.init.zeros_(self.k_proj.bias)
 
     def forward(
         self,
         patches: torch.Tensor,       # (B, N, C) - 键（被检索）
         global_feat: torch.Tensor,   # (B, C) or (B, 1, C) - 查询（检索者）
-        cosine_sim: torch.Tensor,    # (B, N) - 预计算的原始空间余弦（各 head 共享）
+        cosine_sim: torch.Tensor,    # (B, N) - 预计算的余弦相似度
     ) -> torch.Tensor:
         """
-        计算 Cross-Attention score（带逐 head 余弦门控）
+        计算 Cross-Attention score（加法融合）
 
         Args:
-            patches: (B, N, C) - patch tokens 作为 Key（被检索）
-            global_feat: (B, C) or (B, 1, C) - global feature 作为 Query（检索者）
-            cosine_sim: (B, N) - 预计算的余弦相似度（原始特征空间，各 head 共享）
+            patches: (B, N, C) - patch tokens 作为 Key
+            global_feat: (B, C) or (B, 1, C) - global feature 作为 Query
+            cosine_sim: (B, N) - 预计算的余弦相似度
 
         Returns:
-            score: (B, N) - 每个 patch 的重要性得分
+            score: (B, N) - 每个 patch 的重要性得分（概率分布，和为 1）
         """
         B, N, C = patches.shape
 
         if global_feat.dim() == 2:
             global_feat = global_feat.unsqueeze(1)  # (B, C) -> (B, 1, C)
 
-        # ========== Step 1: Q/K 投影 ==========
-        # Q 投影: global 作为查询
-        q = self.q_proj(global_feat)  # (B, 1, C)
-        q = q.reshape(B, 1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        # (B, num_heads, 1, head_dim)
+        # Q/K 投影
+        q = self.q_proj(global_feat).reshape(B, 1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        k = self.k_proj(patches).reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        # q: (B, num_heads, 1, head_dim), k: (B, num_heads, N, head_dim)
 
-        # K 投影: patches 作为键
-        k = self.k_proj(patches)  # (B, N, C)
-        k = k.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        # (B, num_heads, N, head_dim)
-
-        # ========== Step 2: Attention Score + Cosine Bias ==========
-        # ========== 专家建议1：Cosine 作为 bias 加到 logits（加法而非乘法）==========
-        # Q @ K^T / sqrt(d)
+        # 加法融合：attention logits + cosine bias
         attn_logits = (q @ k.transpose(-2, -1)) * self.scale  # (B, num_heads, 1, N)
-        attn_logits = attn_logits.squeeze(2)  # (B, num_heads, N)
+        attn_logits = attn_logits.squeeze(2) + self.alpha * cosine_sim.unsqueeze(1)  # (B, num_heads, N)
 
-        # 加入 cosine bias（推一把，而非"一票否决"）
-        # alpha: 可学习的 bias 强度，避免固定先验完全限制 attention
-        cosine_bias = self.alpha * cosine_sim.unsqueeze(1)  # (B, 1, N)
-        attn_logits = attn_logits + cosine_bias  # (B, num_heads, N)
-
-        # ========== 专家建议2：温度控制（避免过于尖锐）==========
-        # 在 N（patch）维度做 softmax，加温度控制
-        attn = (attn_logits / self.temperature).softmax(dim=-1)  # (B, num_heads, N)
-        # temperature < 1: 更尖锐（集中）
-        # temperature > 1: 更平滑（分散）
-        # 专家建议：0.7~1.0，避免太尖导致不稳定
-
-        # 可选：应用 dropout（训练时）
+        # Softmax + Dropout
+        attn = attn_logits.softmax(dim=-1)  # (B, num_heads, N)
         attn = self.attn_drop(attn)
 
-        # 最终 score：多头平均
-        score = attn.mean(dim=1)  # (B, N)
-
-        return score
+        # 多头平均
+        return attn.mean(dim=1)  # (B, N)
 
 
 class TokenSparse(nn.Module):
