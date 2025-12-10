@@ -858,12 +858,14 @@ class DeMo_Parallel(nn.Module):
             cross_attn_heads=cfg.MODEL.SDTPS_CROSS_ATTN_HEADS,
         )
 
-        # ========== DGAF V4 Module (输出3个独立特征) ==========
-        from modeling.dual_gated_fusion import DualGatedAdaptiveFusionV4
-        self.dgaf = DualGatedAdaptiveFusionV4(
+        # ========== DGAF V3 Module ==========
+        # V3 接受 tokens (B, N, C)，输出 cat 后的特征 (B, 3C)
+        self.dgaf = DualGatedAdaptiveFusionV3(
             feat_dim=self.feat_dim,
+            output_dim=3 * self.feat_dim,
             tau=cfg.MODEL.DGAF_TAU,
             init_alpha=cfg.MODEL.DGAF_INIT_ALPHA,
+            num_heads=cfg.MODEL.DGAF_NUM_HEADS,
         )
 
         # ========== 9个分类头 + BatchNorm ==========
