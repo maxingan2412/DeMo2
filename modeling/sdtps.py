@@ -143,8 +143,8 @@ class TokenSparse(nn.Module):
         sparse_ratio: float = 0.6,
         use_gumbel: bool = False,
         gumbel_tau: float = 1.0,
-        use_adaptive_weights: bool = False,
-        use_soft_masking: bool = False,
+        use_adaptive_weights: bool = True,
+        use_soft_masking: bool = True,
         soft_mask_tau: float = 0.3,
     ):
         super().__init__()
