@@ -352,23 +352,27 @@ class MultiModalSDTPS(nn.Module):
         # ========== Cross-Attention 权重共享选项 ==========
         if self.use_cross_attn:
             if share_cross_attn_weights:
-                # 共享权重：所有模态使用同一个 CrossModalAttention
-                # 参数量：1 个模块（vs 原来的 9 个）
-                print("使用共享 CrossModalAttention 权重（参数量减少 9x）")
-                self.shared_cross_attn = CrossModalAttention(embed_dim, num_heads)
+                # 部分共享：每个模态内部共享，模态间独立
+                # 参数量：3 个模块（RGB、NIR、TIR 各 1 个）
+                print("使用部分共享 CrossModalAttention 权重（每个模态共享，参数量减少 67%）")
 
-                # 所有模态的 attention 都指向同一个共享模块
-                self.rgb_self_attn = self.shared_cross_attn
-                self.rgb_cross_nir = self.shared_cross_attn
-                self.rgb_cross_tir = self.shared_cross_attn
+                # RGB 模态的共享 attention
+                self.rgb_shared_attn = CrossModalAttention(embed_dim, num_heads)
+                self.rgb_self_attn = self.rgb_shared_attn
+                self.rgb_cross_nir = self.rgb_shared_attn
+                self.rgb_cross_tir = self.rgb_shared_attn
 
-                self.nir_self_attn = self.shared_cross_attn
-                self.nir_cross_rgb = self.shared_cross_attn
-                self.nir_cross_tir = self.shared_cross_attn
+                # NIR 模态的共享 attention
+                self.nir_shared_attn = CrossModalAttention(embed_dim, num_heads)
+                self.nir_self_attn = self.nir_shared_attn
+                self.nir_cross_rgb = self.nir_shared_attn
+                self.nir_cross_tir = self.nir_shared_attn
 
-                self.tir_self_attn = self.shared_cross_attn
-                self.tir_cross_rgb = self.shared_cross_attn
-                self.tir_cross_nir = self.shared_cross_attn
+                # TIR 模态的共享 attention
+                self.tir_shared_attn = CrossModalAttention(embed_dim, num_heads)
+                self.tir_self_attn = self.tir_shared_attn
+                self.tir_cross_rgb = self.tir_shared_attn
+                self.tir_cross_nir = self.tir_shared_attn
             else:
                 # 独立权重：每个模态每个交叉都有独立的 CrossModalAttention
                 # 参数量：9 个独立模块
