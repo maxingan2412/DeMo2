@@ -386,27 +386,26 @@ class DeMo(nn.Module):
         if self.training:
             result = ()
 
-            # ========== 修改：SDTPS+DGAF 组合只返回 DGAF 输出 ==========
-            # Priority 1: SDTPS + DGAF (SDTPS 只用于 token selection)
+            # ========== 修改：所有非 Baseline 模式只返回最后的特征，不包含 ori ==========
+            # Priority 1: SDTPS + DGAF (只用 DGAF 特征)
             if self.USE_SDTPS and self.USE_DGAF:
-                # 类似 DGAF-only，只用 DGAF 的输出
                 if self.direct:
-                    result = (dgaf_score, dgaf_feat, ori_score, ori)
+                    result = (dgaf_score, dgaf_feat)  # 不包含 ori
                 else:
                     result = (dgaf_score, dgaf_feat, RGB_ori_score, RGB_global, NI_ori_score, NI_global, TI_ori_score, TI_global)
-            # Priority 2: SDTPS Only
+            # Priority 2: SDTPS Only (只用 SDTPS 特征)
             elif self.USE_SDTPS:
                 if self.direct:
-                    result = (sdtps_score, sdtps_feat)
+                    result = (sdtps_score, sdtps_feat)  # 不包含 ori
                 else:
                     result = (sdtps_score, sdtps_feat, RGB_ori_score, RGB_global, NI_ori_score, NI_global, TI_ori_score, TI_global)
-            # Priority 3: DGAF Only
+            # Priority 3: DGAF Only (只用 DGAF 特征)
             elif self.USE_DGAF:
                 if self.direct:
-                    result = (dgaf_score, dgaf_feat, ori_score, ori)
+                    result = (dgaf_score, dgaf_feat)  # 不包含 ori
                 else:
                     result = (dgaf_score, dgaf_feat, RGB_ori_score, RGB_global, NI_ori_score, NI_global, TI_ori_score, TI_global)
-            # Priority 4: Baseline
+            # Priority 4: Baseline (只用 ori)
             else:
                 if self.direct:
                     result = (ori_score, ori)
@@ -421,16 +420,18 @@ class DeMo(nn.Module):
 
         # --- Inference Return ---
         else:
-            # ========== 修改：SDTPS+DGAF 组合只返回 DGAF 特征 ==========
-            # Flexible return based on configuration
+            # ========== 修改：所有非 Baseline 模式只返回最后的特征，不包含 ori ==========
             if self.USE_SDTPS and self.USE_DGAF:
-                # 只返回 DGAF 特征（SDTPS 只用于 token selection）
-                return torch.cat([ori, dgaf_feat], dim=-1)
+                # SDTPS+DGAF: 只返回 DGAF 特征
+                return dgaf_feat
             elif self.USE_SDTPS and not self.USE_DGAF:
+                # SDTPS-only: 只返回 SDTPS 特征
                 return sdtps_feat
             elif not self.USE_SDTPS and self.USE_DGAF:
-                return torch.cat([ori, dgaf_feat], dim=-1)
+                # DGAF-only: 只返回 DGAF 特征
+                return dgaf_feat
             else:
+                # Baseline: 返回 ori
                 return ori
 
 
