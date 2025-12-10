@@ -1041,10 +1041,6 @@ def make_model(cfg, num_class, camera_num, view_num=0):
 
     return model
 
-      └─→ Fused → RGB_fused, NI_fused, TI_fused (3个特征)
-
-    总计: 9个特征 → 9个分类头 → 9个分数
-    ```
 
     相比顺序架构的优势：
     1. 并行处理：SDTPS/DGAF/Fused 完全独立，无错误累积
