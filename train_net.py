@@ -11,6 +11,8 @@ import numpy as np
 import os
 import argparse
 from config import cfg
+from torch.utils.tensorboard import SummaryWriter
+from datetime import datetime
 
 
 def set_seed(seed):
@@ -87,6 +89,30 @@ if __name__ == '__main__':
     optimizer, optimizer_center = make_optimizer(cfg, model, center_criterion)
 
     scheduler = create_scheduler(cfg, optimizer)
+
+    # ========== TensorBoard Integration ==========
+    # Create TensorBoard writer for monitoring training
+    is_main_process = (not cfg.MODEL.DIST_TRAIN) or (args.local_rank == 0)
+
+    if is_main_process:
+        # Build experiment name from config file and timestamp
+        if args.exp_name:
+            exp_id = args.exp_name
+        else:
+            config_name = os.path.splitext(os.path.basename(args.config_file))[0] if args.config_file else "default"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            exp_id = f"{config_name}_{timestamp}"
+
+        # TensorBoard log directory
+        tensorboard_dir = os.path.join('logs', 'tensorboard', exp_id)
+        os.makedirs(tensorboard_dir, exist_ok=True)
+
+        writer = SummaryWriter(log_dir=tensorboard_dir)
+        logger.info(f"TensorBoard logging to: {tensorboard_dir}")
+        logger.info(f"Start TensorBoard with: tensorboard --logdir logs/tensorboard --port 6006")
+    else:
+        writer = None
+
     do_train(
         cfg,
         model,
@@ -97,5 +123,10 @@ if __name__ == '__main__':
         optimizer_center,
         scheduler,
         loss_func,
-        num_query, args.local_rank, exp_name=args.exp_name
+        num_query, args.local_rank, exp_name=args.exp_name, writer=writer
     )
+
+    # Close TensorBoard writer
+    if writer is not None:
+        writer.close()
+        logger.info("TensorBoard writer closed")

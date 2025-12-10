@@ -18,7 +18,7 @@ def do_train(cfg,
              optimizer_center,
              scheduler,
              loss_fn,
-             num_query, local_rank, exp_name=None):
+             num_query, local_rank, exp_name=None, writer=None):
     log_period = cfg.SOLVER.LOG_PERIOD
     checkpoint_period = cfg.SOLVER.CHECKPOINT_PERIOD
     eval_period = cfg.SOLVER.EVAL_PERIOD
@@ -122,6 +122,16 @@ def do_train(cfg,
                             .format(epoch, (n_iter + 1), len(train_loader),
                                     loss_meter.avg, acc_meter.avg, scheduler._get_lr(epoch)[0]))
 
+                # ========== TensorBoard: Log training metrics ==========
+                if writer is not None:
+                    global_step = (epoch - 1) * len(train_loader) + (n_iter + 1)
+                    current_lr = scheduler._get_lr(epoch)[0]
+
+                    # Log main metrics
+                    writer.add_scalar('Train/Loss', loss_meter.avg, global_step)
+                    writer.add_scalar('Train/Acc', acc_meter.avg, global_step)
+                    writer.add_scalar('Train/LR', current_lr, global_step)
+
 
 
         end_time = time.time()
@@ -156,6 +166,21 @@ def do_train(cfg,
                         best_pth_name = cfg.MODEL.NAME + '_best.pth'
                     torch.save(model.state_dict(),
                                os.path.join(cfg.OUTPUT_DIR, best_pth_name))
+
+                # ========== TensorBoard: Log validation metrics ==========
+                if writer is not None:
+                    # Log combined features results
+                    writer.add_scalar('Val/mAP', mAP, epoch)
+                    writer.add_scalar('Val/Rank-1', cmc[0], epoch)
+                    writer.add_scalar('Val/Rank-5', cmc[4], epoch)
+                    writer.add_scalar('Val/Rank-10', cmc[9], epoch)
+
+                    # Log best metrics
+                    writer.add_scalar('Val_Best/mAP', best_index['mAP'], epoch)
+                    writer.add_scalar('Val_Best/Rank-1', best_index['Rank-1'], epoch)
+                    writer.add_scalar('Val_Best/Rank-5', best_index['Rank-5'], epoch)
+                    writer.add_scalar('Val_Best/Rank-10', best_index['Rank-10'], epoch)
+
                 logger.info("~" * 50)
                 logger.info("Best mAP: {:.1%}".format(best_index['mAP']))
                 logger.info("Best Rank-1: {:.1%}".format(best_index['Rank-1']))
