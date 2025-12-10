@@ -22,16 +22,24 @@ class CrossModalAttention(nn.Module):
 
     核心设计：
     1. Q/K 反向：global 作为 Query，patches 作为 Key
-    2. 余弦分布为主：cosine 经过 softmax 得到主分布
-    3. 逐 head 余弦门控：Attention logits 经 sigmoid 作为 gate
-    4. 在多头平均前进行门控，必要时可重新归一化
+    2. 逐 head 余弦门控：每个 head 学习独立的 scale 和 bias
+    3. 在多头平均前进行门控，保留多头差异性
+    4. 在 N（patch）维度做 softmax
 
     计算流程：
     1. 余弦相似度：cos_sim = normalize(patches) @ normalize(global)^T  # (B, N)
-    2. Q/K 投影生成 gate：attn_gate = sigmoid(Q @ K^T / sqrt(d))  # (B, num_heads, N)
-    3. Cosine 主分布：cos_weight = softmax(alpha * cos_sim / temperature)  # (B, N)
-    4. 门控：attn = cos_weight ⊗ attn_gate；[可选] renormalize(attn)
-    5. 多头平均：score = mean(attn, dim=heads)  # (B, N)
+    2. Q/K 投影 + Attention：
+       Q = W_q @ global, K = W_k @ patches
+       attn = softmax(Q @ K^T / sqrt(d), dim=N)  # (B, num_heads, N)
+    3. 逐 head 余弦门控：
+       gate_logits = cosine * scale[h] + bias[h]  # (B, num_heads, N)
+       [可选] gate_logits = LayerNorm(gate_logits)  # 稳定尺度
+       gate = sigmoid(gate_logits)  # (B, num_heads, N)
+    4. 门控注意力：
+       attn_gated = attn * gate  # 逐元素点乘
+       [可选] attn_gated = renormalize(attn_gated)  # 保持概率性
+    5. 多头平均：
+       score = mean(attn_gated, dim=heads)  # (B, N)
 
     优势：
     - 参数极少：num_heads × 2 个参数（如 4 heads = 8 params）
@@ -56,8 +64,8 @@ class CrossModalAttention(nn.Module):
         qkv_bias: bool = True,
         attn_drop: float = 0.0,
         use_gate_norm: bool = False,
-        renormalize_attn: bool = True,   # 强制开启，保持 gate 后仍为概率分布
-        cosine_bias_alpha: float = 1.0,  # Cosine 调制强度（残差项系数）
+        renormalize_attn: bool = False,
+        cosine_bias_alpha: float = 1.0,  # Cosine bias 强度
         attn_temperature: float = 1.0,   # Attention 温度
     ):
         super().__init__()
@@ -66,8 +74,7 @@ class CrossModalAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
         self.scale = self.head_dim ** -0.5
-        # 强制启用重新归一化，避免 gate 后总和偏移
-        self.renormalize_attn = True
+        self.renormalize_attn = renormalize_attn
 
         # Q, K 投影（Q 用于 global，K 用于 patches）
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=qkv_bias)
@@ -75,10 +82,10 @@ class CrossModalAttention(nn.Module):
 
         self.attn_drop = nn.Dropout(attn_drop)
 
-        # ========== Cosine 主分布缩放 + Temperature ==========
-        # 可学习的 cosine 主 logits 缩放（决定 cosine 主导力度）
+        # ========== 专家建议1+2：Cosine bias + Temperature ==========
+        # 可学习的 cosine bias 强度（避免"一票否决"）
         self.alpha = nn.Parameter(torch.tensor(cosine_bias_alpha))
-        # 可学习的 cosine 温度（控制平滑度）
+        # 可学习的 attention 温度（控制峰值）
         self.temperature = nn.Parameter(torch.tensor(attn_temperature))
 
         self._init_weights()
@@ -129,21 +136,28 @@ class CrossModalAttention(nn.Module):
         k = k.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         # (B, num_heads, N, head_dim)
 
-        # ========== Step 2: Cosine 主分布 + Attention 门控 ==========
-        # Q @ K^T / sqrt(d) 只用于 gate，避免压制 cosine 主分布
+        # ========== Step 2: Attention Score + Cosine Bias ==========
+        # ========== 专家建议1：Cosine 作为 bias 加到 logits（加法而非乘法）==========
+        # Q @ K^T / sqrt(d)
         attn_logits = (q @ k.transpose(-2, -1)) * self.scale  # (B, num_heads, 1, N)
-        attn_gate = torch.sigmoid(attn_logits.squeeze(2))  # (B, num_heads, N)
-        attn_gate = self.attn_drop(attn_gate)
+        attn_logits = attn_logits.squeeze(2)  # (B, num_heads, N)
 
-        # Cosine 作为主分布，softmax 控制平滑度
-        cos_logits = self.alpha * cosine_sim  # (B, N)
-        cos_weight = (cos_logits / self.temperature).softmax(dim=-1)  # (B, N)
+        # 加入 cosine bias（推一把，而非"一票否决"）
+        # alpha: 可学习的 bias 强度，避免固定先验完全限制 attention
+        cosine_bias = self.alpha * cosine_sim.unsqueeze(1)  # (B, 1, N)
+        attn_logits = attn_logits + cosine_bias  # (B, num_heads, N)
 
-        # 逐 head 门控并强制重新归一化
-        attn = cos_weight.unsqueeze(1) * attn_gate  # (B, num_heads, N)
-        attn = attn / (attn.sum(dim=-1, keepdim=True) + 1e-8)
+        # ========== 专家建议2：温度控制（避免过于尖锐）==========
+        # 在 N（patch）维度做 softmax，加温度控制
+        attn = (attn_logits / self.temperature).softmax(dim=-1)  # (B, num_heads, N)
+        # temperature < 1: 更尖锐（集中）
+        # temperature > 1: 更平滑（分散）
+        # 专家建议：0.7~1.0，避免太尖导致不稳定
 
-        # 多头平均得到最终 score
+        # 可选：应用 dropout（训练时）
+        attn = self.attn_drop(attn)
+
+        # 最终 score：多头平均
         score = attn.mean(dim=1)  # (B, N)
 
         return score
@@ -240,19 +254,6 @@ class TokenSparse(nn.Module):
             score_mask: (B, N) - 决策矩阵 D，1=选中，0=丢弃
         """
         B, N, C = tokens.size()
-
-        # ========== 专家建议5：确保输入 score 非负（用于排序/选择）==========
-        # ReID 跨模态 cosine 可能为负（模态差异/对齐误差）
-        # 负值会在 TopK/排序中"一票否决"有用的 patch
-        #
-        # 处理策略：
-        # - CrossModalAttention 的 softmax 输出已经 ∈ [0, 1]（无需处理）
-        # - 但 use_cross_attn=False 分支直接传 cosine，可能为负
-        # - 统一 clamp 确保鲁棒性
-        self_attention = self_attention.clamp(min=0)      # 确保非负
-        cross_attention_m2 = cross_attention_m2.clamp(min=0)
-        cross_attention_m3 = cross_attention_m3.clamp(min=0)
-        # clamp(min=0) 优于 (x+1)/2，保留正值动态范围
 
         # ========== Step 1: 计算综合得分（样本自适应权重）==========
         # 归一化各注意力得分
@@ -512,11 +513,10 @@ class MultiModalSDTPS(nn.Module):
             rgb_nir_cross = self.rgb_cross_nir(RGB_cash, NI_global, rgb_cos_nir)
             rgb_tir_cross = self.rgb_cross_tir(RGB_cash, TI_global, rgb_cos_tir)
         else:
-            # ========== 专家建议5：直接使用 cosine 时，确保非负 ==========
-            # 原始 cosine 可能为负，用于 token selection 前需要 clamp
-            rgb_self_attn = rgb_cos_self.clamp(min=0)
-            rgb_nir_cross = rgb_cos_nir.clamp(min=0)
-            rgb_tir_cross = rgb_cos_tir.clamp(min=0)
+            # 仅使用余弦相似度
+            rgb_self_attn = rgb_cos_self
+            rgb_nir_cross = rgb_cos_nir
+            rgb_tir_cross = rgb_cos_tir
 
         # 保留投影空间余弦的实现作为注释（未来可通过超参数切换）
         # if self.use_cross_attn:
@@ -543,10 +543,9 @@ class MultiModalSDTPS(nn.Module):
             nir_rgb_cross = self.nir_cross_rgb(NI_cash, RGB_global, nir_cos_rgb)
             nir_tir_cross = self.nir_cross_tir(NI_cash, TI_global, nir_cos_tir)
         else:
-            # ========== 专家建议5：直接使用 cosine 时，确保非负 ==========
-            nir_self_attn = nir_cos_self.clamp(min=0)
-            nir_rgb_cross = nir_cos_rgb.clamp(min=0)
-            nir_tir_cross = nir_cos_tir.clamp(min=0)
+            nir_self_attn = nir_cos_self
+            nir_rgb_cross = nir_cos_rgb
+            nir_tir_cross = nir_cos_tir
 
         # 保留投影空间余弦的实现作为注释（未来可通过超参数切换）
         # if self.use_cross_attn:
@@ -572,10 +571,9 @@ class MultiModalSDTPS(nn.Module):
             tir_rgb_cross = self.tir_cross_rgb(TI_cash, RGB_global, tir_cos_rgb)
             tir_nir_cross = self.tir_cross_nir(TI_cash, NI_global, tir_cos_nir)
         else:
-            # ========== 专家建议5：直接使用 cosine 时，确保非负 ==========
-            tir_self_attn = tir_cos_self.clamp(min=0)
-            tir_rgb_cross = tir_cos_rgb.clamp(min=0)
-            tir_nir_cross = tir_cos_nir.clamp(min=0)
+            tir_self_attn = tir_cos_self
+            tir_rgb_cross = tir_cos_rgb
+            tir_nir_cross = tir_cos_nir
 
         # 保留投影空间余弦的实现作为注释（未来可通过超参数切换）
         # if self.use_cross_attn:
