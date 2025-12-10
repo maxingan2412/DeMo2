@@ -963,11 +963,15 @@ class DeMo_Parallel(nn.Module):
         feat_sdtps_nir = NI_enh.mean(dim=1)
         feat_sdtps_tir = TI_enh.mean(dim=1)
 
-        # ========== 分支2: DGAF V4 (并行) ==========
-        # 输入: 直接用 global features
-        feat_dgaf_rgb, feat_dgaf_nir, feat_dgaf_tir = self.dgaf(
-            RGB_global, NI_global, TI_global
-        )
+        # ========== 分支2: DGAF V3 (并行) ==========
+        # 输入: tokens (B, N, C) - 保留局部信息
+        # V3 输出: cat([RGB_out, NI_out, TI_out], dim=-1) -> (B, 3C)
+        dgaf_output = self.dgaf(RGB_cash, NI_cash, TI_cash)  # (B, 3C)
+
+        # 按最后一个维度拆分成3个独立特征
+        feat_dgaf_rgb = dgaf_output[:, :self.feat_dim]                    # (B, C)
+        feat_dgaf_nir = dgaf_output[:, self.feat_dim:2*self.feat_dim]     # (B, C)
+        feat_dgaf_tir = dgaf_output[:, 2*self.feat_dim:]                  # (B, C)
 
         # ========== 分支3: Fused (并行) ==========
         # 固定使用 fuse_global_local
