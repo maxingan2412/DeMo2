@@ -58,23 +58,30 @@ echo "==========================================================================
 echo ""
 echo "Starting RGBNT201 experiments on 4 GPUs..."
 
+# 构建 log 文件名（包含可选标识）
+if [ -n "$EXP_TAG" ]; then
+    LOG_SUFFIX="_${EXP_TAG}"
+else
+    LOG_SUFFIX=""
+fi
+
 # GPU 0: Baseline
-CUDA_VISIBLE_DEVICES=0 nohup python train_net.py --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml MODEL.USE_SDTPS False MODEL.USE_DGAF False MODEL.GLOBAL_LOCAL False > ${EXP_DIR_201}/01_baseline.log 2>&1 &
+CUDA_VISIBLE_DEVICES=0 nohup python train_net.py --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml MODEL.USE_SDTPS False MODEL.USE_DGAF False MODEL.GLOBAL_LOCAL False > ${EXP_DIR_201}/01_baseline${LOG_SUFFIX}.log 2>&1 &
 PID_201_1=$!
 echo "  GPU 0: Baseline, PID: ${PID_201_1}"
 
 # GPU 1: SDTPS only (attention, no DGAF, no GLOBAL_LOCAL)
-CUDA_VISIBLE_DEVICES=1 nohup python train_net.py --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml MODEL.USE_SDTPS True MODEL.USE_DGAF False MODEL.GLOBAL_LOCAL False MODEL.SDTPS_CROSS_ATTN_TYPE attention MODEL.SDTPS_CROSS_ATTN_HEADS 4 > ${EXP_DIR_201}/02_sdtps_only.log 2>&1 &
+CUDA_VISIBLE_DEVICES=1 nohup python train_net.py --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml MODEL.USE_SDTPS True MODEL.USE_DGAF False MODEL.GLOBAL_LOCAL False MODEL.SDTPS_CROSS_ATTN_TYPE attention MODEL.SDTPS_CROSS_ATTN_HEADS 4 > ${EXP_DIR_201}/02_sdtps_only${LOG_SUFFIX}.log 2>&1 &
 PID_201_2=$!
 echo "  GPU 1: SDTPS only, PID: ${PID_201_2}"
 
 # GPU 2: DGAF V3 only
-CUDA_VISIBLE_DEVICES=2 nohup python train_net.py --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml MODEL.USE_SDTPS False MODEL.USE_DGAF True MODEL.DGAF_VERSION v3 MODEL.GLOBAL_LOCAL False > ${EXP_DIR_201}/03_dgaf_v3_only.log 2>&1 &
+CUDA_VISIBLE_DEVICES=2 nohup python train_net.py --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml MODEL.USE_SDTPS False MODEL.USE_DGAF True MODEL.DGAF_VERSION v3 MODEL.GLOBAL_LOCAL False > ${EXP_DIR_201}/03_dgaf_v3_only${LOG_SUFFIX}.log 2>&1 &
 PID_201_3=$!
 echo "  GPU 2: DGAF V3 only, PID: ${PID_201_3}"
 
 # GPU 3: SDTPS + DGAF V3 (优化：改用 V3，避免双重压缩)
-CUDA_VISIBLE_DEVICES=3 nohup python train_net.py --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml MODEL.USE_SDTPS True MODEL.USE_DGAF True MODEL.DGAF_VERSION v3 MODEL.GLOBAL_LOCAL False MODEL.SDTPS_CROSS_ATTN_TYPE attention MODEL.SDTPS_CROSS_ATTN_HEADS 4 > ${EXP_DIR_201}/04_sdtps_dgaf_v3.log 2>&1 &
+CUDA_VISIBLE_DEVICES=3 nohup python train_net.py --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml MODEL.USE_SDTPS True MODEL.USE_DGAF True MODEL.DGAF_VERSION v3 MODEL.GLOBAL_LOCAL False MODEL.SDTPS_CROSS_ATTN_TYPE attention MODEL.SDTPS_CROSS_ATTN_HEADS 4 > ${EXP_DIR_201}/04_sdtps_dgaf_v3${LOG_SUFFIX}.log 2>&1 &
 PID_201_4=$!
 echo "  GPU 3: SDTPS + DGAF V3 (避免双重压缩), PID: ${PID_201_4}"
 
