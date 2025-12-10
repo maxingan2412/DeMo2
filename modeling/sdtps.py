@@ -65,7 +65,7 @@ class CrossModalAttention(nn.Module):
         attn_drop: float = 0.0,
         use_gate_norm: bool = False,
         renormalize_attn: bool = False,
-        cosine_bias_alpha: float = 1.0,  # Cosine bias 强度
+        cosine_bias_alpha: float = 1.0,  # Cosine 调制强度（残差项系数）
         attn_temperature: float = 1.0,   # Attention 温度
     ):
         super().__init__()
@@ -82,8 +82,8 @@ class CrossModalAttention(nn.Module):
 
         self.attn_drop = nn.Dropout(attn_drop)
 
-        # ========== 专家建议1+2：Cosine bias + Temperature ==========
-        # 可学习的 cosine bias 强度（避免"一票否决"）
+        # ========== 专家建议1+2：Cosine 调制 + Temperature ==========
+        # 可学习的 cosine 调制强度（残差调制系数）
         self.alpha = nn.Parameter(torch.tensor(cosine_bias_alpha))
         # 可学习的 attention 温度（控制峰值）
         self.temperature = nn.Parameter(torch.tensor(attn_temperature))
@@ -142,11 +142,6 @@ class CrossModalAttention(nn.Module):
         attn_logits = (q @ k.transpose(-2, -1)) * self.scale  # (B, num_heads, 1, N)
         attn_logits = attn_logits.squeeze(2)  # (B, num_heads, N)
 
-        # 加入 cosine bias（推一把，而非"一票否决"）
-        # alpha: 可学习的 bias 强度，避免固定先验完全限制 attention
-        cosine_bias = self.alpha * cosine_sim.unsqueeze(1)  # (B, 1, N)
-        attn_logits = attn_logits + cosine_bias  # (B, num_heads, N)
-
         # ========== 专家建议2：温度控制（避免过于尖锐）==========
         # 在 N（patch）维度做 softmax，加温度控制
         attn = (attn_logits / self.temperature).softmax(dim=-1)  # (B, num_heads, N)
@@ -157,8 +152,14 @@ class CrossModalAttention(nn.Module):
         # 可选：应用 dropout（训练时）
         attn = self.attn_drop(attn)
 
-        # 最终 score：多头平均
-        score = attn.mean(dim=1)  # (B, N)
+        # 多头平均得到 patch 权重（均值约为 1/N）；乘 N 让均值回到 1，便于残差调制
+        w = attn.mean(dim=1) * N  # (B, N)
+
+        # Cosine 映射到 [0,1]，作为主体信号；alpha 作为调制强度
+        cos01 = (cosine_sim + 1.0) * 0.5  # (B, N)
+
+        # 残差式融合：score = cos + alpha * cos * w
+        score = cos01 + self.alpha * (cos01 * w)  # (B, N)
 
         return score
 
