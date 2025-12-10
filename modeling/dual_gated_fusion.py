@@ -742,6 +742,163 @@ class DualGatedAdaptiveFusionV3(nn.Module):
             return torch.cat([h_rgb_out, h_nir_out, h_tir_out], dim=-1)
 
 
+class DualGatedAdaptiveFusionV4(nn.Module):
+    """
+    双门控自适应融合 V4 - 返回3个独立特征（用于 DeMo_Parallel）
+
+    核心改进：
+    1. 返回3个独立的增强特征（而非拼接）：(h_rgb_out, h_nir_out, h_tir_out)
+    2. 保留双门控机制：IEG（信息熵门控）+ MIG（模态重要性门控）
+    3. 用融合特征增强各模态，但保持各模态独立
+
+    设计目的：
+        为 DeMo_Parallel 提供3个独立的 DGAF 增强特征，用于独立分类
+
+    流程：
+        输入: 3 × (B, C)  ← 各模态聚合特征
+              ↓
+        双门控融合 (IEG + MIG)
+              ↓
+        融合特征: (B, C)
+              ↓
+        增强各模态: h_m + enhance(h_fused)
+              ↓
+        输出: 3 × (B, C) - 独立特征
+
+    Args:
+        feat_dim: 特征维度 (512 for CLIP, 768 for ViT)
+        tau: 熵门控的温度参数
+        init_alpha: α 的初始值（平衡 IEG 和 MIG）
+        hidden_dim: MIG 门控网络的隐藏层维度
+    """
+
+    def __init__(
+        self,
+        feat_dim: int,
+        tau: float = 1.0,
+        init_alpha: float = 0.5,
+        hidden_dim: int = None,
+    ):
+        super().__init__()
+        self.feat_dim = feat_dim
+        self.tau = tau
+        hidden_dim = hidden_dim or feat_dim
+
+        # ========== 信息熵门控 (IEG) ==========
+        self.entropy_proj = nn.Linear(feat_dim, feat_dim)
+
+        # ========== 模态重要性门控 (MIG) ==========
+        self.gate_net = nn.Sequential(
+            nn.Linear(3 * feat_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, 3),
+            nn.Sigmoid()
+        )
+
+        # ========== 可学习的平衡参数 α ==========
+        self._alpha = nn.Parameter(torch.tensor(init_alpha))
+
+        # ========== 模态增强投影 ==========
+        self.modal_enhance = nn.Sequential(
+            nn.Linear(feat_dim, feat_dim),
+            nn.LayerNorm(feat_dim),
+        )
+
+    @property
+    def alpha(self) -> torch.Tensor:
+        """获取约束后的 α 值"""
+        return torch.sigmoid(self._alpha)
+
+    def compute_entropy(self, feat: torch.Tensor) -> torch.Tensor:
+        """
+        计算特征的信息熵
+
+        Args:
+            feat: (B, C) 特征向量
+
+        Returns:
+            entropy: (B,) 每个样本的熵
+        """
+        feat_abs = torch.abs(feat) + 1e-8
+        prob = feat_abs / feat_abs.sum(dim=-1, keepdim=True)
+        entropy = -torch.sum(prob * torch.log(prob + 1e-8), dim=-1)
+        return entropy
+
+    def forward(
+        self,
+        h_rgb: torch.Tensor,   # (B, C)
+        h_nir: torch.Tensor,   # (B, C)
+        h_tir: torch.Tensor,   # (B, C)
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        双门控自适应融合（返回3个独立特征）
+
+        Args:
+            h_rgb: RGB 全局特征 (B, C)
+            h_nir: NIR 全局特征 (B, C)
+            h_tir: TIR 全局特征 (B, C)
+
+        Returns:
+            h_rgb_out: (B, C) 增强的 RGB 特征
+            h_nir_out: (B, C) 增强的 NIR 特征
+            h_tir_out: (B, C) 增强的 TIR 特征
+        """
+        B, C = h_rgb.shape
+
+        # ========== 1. 信息熵门控 (IEG) ==========
+        # 计算每个模态的熵
+        H_rgb = self.compute_entropy(h_rgb)
+        H_nir = self.compute_entropy(h_nir)
+        H_tir = self.compute_entropy(h_tir)
+
+        # 计算投影后的 logits
+        z_rgb = self.entropy_proj(h_rgb).mean(dim=-1)
+        z_nir = self.entropy_proj(h_nir).mean(dim=-1)
+        z_tir = self.entropy_proj(h_tir).mean(dim=-1)
+
+        # 熵调制: 低熵 → 高权重
+        score_rgb = z_rgb * torch.exp(-H_rgb / self.tau)
+        score_nir = z_nir * torch.exp(-H_nir / self.tau)
+        score_tir = z_tir * torch.exp(-H_tir / self.tau)
+
+        # Softmax 归一化
+        scores = torch.stack([score_rgb, score_nir, score_tir], dim=-1)
+        entropy_weights = F.softmax(scores, dim=-1)  # (B, 3)
+
+        # 熵加权融合
+        h_entropy = (
+            entropy_weights[:, 0:1] * h_rgb +
+            entropy_weights[:, 1:2] * h_nir +
+            entropy_weights[:, 2:3] * h_tir
+        )  # (B, C)
+
+        # ========== 2. 模态重要性门控 (MIG) ==========
+        h_concat = torch.cat([h_rgb, h_nir, h_tir], dim=-1)  # (B, 3C)
+        gates = self.gate_net(h_concat)  # (B, 3)
+
+        # 门控缩放
+        h_rgb_gated = gates[:, 0:1] * h_rgb
+        h_nir_gated = gates[:, 1:2] * h_nir
+        h_tir_gated = gates[:, 2:3] * h_tir
+
+        # 门控加权融合
+        h_importance = h_rgb_gated + h_nir_gated + h_tir_gated  # (B, C)
+
+        # ========== 3. 自适应融合 ==========
+        alpha = self.alpha
+        h_fused = alpha * h_entropy + (1 - alpha) * h_importance  # (B, C)
+
+        # ========== 4. 增强各模态（保持独立）==========
+        h_enhance = self.modal_enhance(h_fused)
+
+        h_rgb_out = h_rgb + h_enhance
+        h_nir_out = h_nir + h_enhance
+        h_tir_out = h_tir + h_enhance
+
+        return h_rgb_out, h_nir_out, h_tir_out
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("测试 Dual-Gated Adaptive Fusion 模块")
@@ -793,12 +950,21 @@ if __name__ == "__main__":
     print(f"  输出: {fused_out.shape}")
     print(f"  α = {post_fusion.alpha.item():.4f}")
 
+    # 测试 V4 - 返回3个独立特征
+    print("\n[V4 - 返回3个独立特征（用于 DeMo_Parallel）]")
+    dgaf_v4 = DualGatedAdaptiveFusionV4(feat_dim=C)
+    rgb_out_v4, nir_out_v4, tir_out_v4 = dgaf_v4(h_rgb, h_nir, h_tir)
+    print(f"  输入: 3 x (B={B}, C={C})")
+    print(f"  输出: RGB={rgb_out_v4.shape}, NIR={nir_out_v4.shape}, TIR={tir_out_v4.shape}")
+    print(f"  α = {dgaf_v4.alpha.item():.4f}")
+
     # 参数统计
     print("\n[参数量统计]")
     print(f"  V1 (single): {sum(p.numel() for p in dgaf_single.parameters()):,}")
     print(f"  V1 (concat): {sum(p.numel() for p in dgaf_concat.parameters()):,}")
     print(f"  V2: {sum(p.numel() for p in dgaf_v2.parameters()):,}")
     print(f"  PostSDTPS: {sum(p.numel() for p in post_fusion.parameters()):,}")
+    print(f"  V4: {sum(p.numel() for p in dgaf_v4.parameters()):,}")
 
     print("\n" + "=" * 60)
     print("所有测试通过!")
