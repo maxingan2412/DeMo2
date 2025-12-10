@@ -148,7 +148,7 @@ class TokenSparse(nn.Module):
         use_gumbel: bool = False,
         gumbel_tau: float = 1.0,
         use_adaptive_weights: bool = True,
-        use_soft_masking: bool = True,  # 专家建议3：使用 soft masking
+        use_soft_masking: bool = False,  # 专家建议3：使用 soft masking
         soft_mask_tau: float = 0.3,      # Soft masking 温度
     ):
         super().__init__()
