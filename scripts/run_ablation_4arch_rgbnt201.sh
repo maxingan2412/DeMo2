@@ -3,6 +3,14 @@
 # 4种架构消融实验 - 仅 RGBNT201 数据集
 # 4种配置在4个GPU上并行执行
 # ============================================================================
+# 用法:
+#   bash run_ablation_4arch_rgbnt201.sh [实验标识]
+#
+# 示例:
+#   bash run_ablation_4arch_rgbnt201.sh 实验1
+#   bash run_ablation_4arch_rgbnt201.sh shared_weights
+#   bash run_ablation_4arch_rgbnt201.sh  # 默认无标识
+# ============================================================================
 #
 # 4种配置:
 # 1. Baseline:        无 SDTPS, 无 DGAF, 无 GLOBAL_LOCAL → 只用 ori 损失
@@ -13,15 +21,28 @@
 #
 # ============================================================================
 
+# 获取命令行参数（可选的实验标识）
+EXP_TAG="${1:-}"
+
 # Get timestamp for folder name
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
-# Create experiment folder
-EXP_DIR_201="logs/RGBNT201_4arch_ablation_${TIMESTAMP}"
+# 构建实验目录名（包含可选标识）
+if [ -n "$EXP_TAG" ]; then
+    # 有标识：加入到目录名中
+    EXP_DIR_201="logs/RGBNT201_4arch_ablation_${EXP_TAG}_${TIMESTAMP}"
+else
+    # 无标识：只用时间戳
+    EXP_DIR_201="logs/RGBNT201_4arch_ablation_${TIMESTAMP}"
+fi
+
 mkdir -p ${EXP_DIR_201}
 
 echo "=============================================================================="
 echo "4种架构消融实验 - RGBNT201"
+if [ -n "$EXP_TAG" ]; then
+    echo "实验标识: ${EXP_TAG}"
+fi
 echo "=============================================================================="
 echo "配置1: Baseline        - 只用 ori 损失"
 echo "配置2: SDTPS only      - 只用 sdtps 损失"
