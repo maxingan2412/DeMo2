@@ -306,21 +306,38 @@ class DeMo(nn.Module):
             RGB_enh, NI_enh, TI_enh, _, _, _ = self.sdtps(
                 RGB_cash, NI_cash, TI_cash, RGB_global, NI_global, TI_global
             )
-            # Global-Local Fusion for SDTPS features
-            RGB_final = fuse_global_local(RGB_enh, RGB_global, self.pool, self.rgb_reduce)
-            NI_final  = fuse_global_local(NI_enh, NI_global, self.pool, self.nir_reduce)
-            TI_final  = fuse_global_local(TI_enh, TI_global, self.pool, self.tir_reduce)
 
+            # Feature aggregation: use GLOBAL_LOCAL fusion if enabled, else mean pooling
+            if self.GLOBAL_LOCAL:
+                # Global-Local Fusion: pool enhanced tokens + concat with backbone global
+                RGB_final = fuse_global_local(RGB_enh, RGB_global, self.pool, self.rgb_reduce)
+                NI_final  = fuse_global_local(NI_enh, NI_global, self.pool, self.nir_reduce)
+                TI_final  = fuse_global_local(TI_enh, TI_global, self.pool, self.tir_reduce)
+            else:
+                # Simple mean pooling when GLOBAL_LOCAL=False (SDTPS-only baseline)
+                RGB_final = RGB_enh.mean(dim=1)  # (B, N, C) -> (B, C)
+                NI_final  = NI_enh.mean(dim=1)
+                TI_final  = TI_enh.mean(dim=1)
+
+            # ========== 修改：SDTPS+DGAF 组合时，SDTPS 只用于 token selection ==========
+            # 总是构建 sdtps_feat（用于推理），但只在 SDTPS-only 时计算分类器
             sdtps_feat = torch.cat([RGB_final, NI_final, TI_final], dim=-1)
-
-            if self.training:
+            sdtps_score = None
+            if self.training and not self.USE_DGAF:
+                # SDTPS-only: 计算 SDTPS 分类器
                 sdtps_score = self.classifier_sdtps(self.bottleneck_sdtps(sdtps_feat))
 
         # B. DGAF Path
         if self.USE_DGAF:
             if self.DGAF_VERSION == 'v3':
+                # ========== 修改：V3 使用 SDTPS 选择后的 tokens ==========
                 # V3 directly uses patch tokens
-                dgaf_feat = self.dgaf(RGB_cash, NI_cash, TI_cash)
+                if self.USE_SDTPS:
+                    # 使用 SDTPS 选择后的 enhanced tokens
+                    dgaf_feat = self.dgaf(RGB_enh, NI_enh, TI_enh)
+                else:
+                    # DGAF-only：使用原始 tokens
+                    dgaf_feat = self.dgaf(RGB_cash, NI_cash, TI_cash)
             else:
                 # V1 needs aggregated features (B, C)
                 if self.USE_SDTPS:
@@ -369,9 +386,14 @@ class DeMo(nn.Module):
         if self.training:
             result = ()
 
-            # Priority 1: SDTPS + DGAF
+            # ========== 修改：SDTPS+DGAF 组合只返回 DGAF 输出 ==========
+            # Priority 1: SDTPS + DGAF (SDTPS 只用于 token selection)
             if self.USE_SDTPS and self.USE_DGAF:
-                result = (sdtps_score, sdtps_feat, dgaf_score, dgaf_feat)
+                # 类似 DGAF-only，只用 DGAF 的输出
+                if self.direct:
+                    result = (dgaf_score, dgaf_feat, ori_score, ori)
+                else:
+                    result = (dgaf_score, dgaf_feat, RGB_ori_score, RGB_global, NI_ori_score, NI_global, TI_ori_score, TI_global)
             # Priority 2: SDTPS Only
             elif self.USE_SDTPS:
                 if self.direct:
@@ -399,13 +421,15 @@ class DeMo(nn.Module):
 
         # --- Inference Return ---
         else:
+            # ========== 修改：SDTPS+DGAF 组合只返回 DGAF 特征 ==========
             # Flexible return based on configuration
-            if self.USE_SDTPS and not self.USE_DGAF:
+            if self.USE_SDTPS and self.USE_DGAF:
+                # 只返回 DGAF 特征（SDTPS 只用于 token selection）
+                return torch.cat([ori, dgaf_feat], dim=-1)
+            elif self.USE_SDTPS and not self.USE_DGAF:
                 return sdtps_feat
             elif not self.USE_SDTPS and self.USE_DGAF:
                 return torch.cat([ori, dgaf_feat], dim=-1)
-            elif self.USE_SDTPS and self.USE_DGAF:
-               return torch.cat([sdtps_feat, dgaf_feat], dim=-1)
             else:
                 return ori
 
