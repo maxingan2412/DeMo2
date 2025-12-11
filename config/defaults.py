@@ -72,6 +72,8 @@ _C.MODEL.SDTPS_SHARE_CROSS_ATTN = False  # Per-modality sharing (3 modules, -67%
 # FRCA: Fourier Residual Channel Attention (replaces SDTPS when enabled)
 _C.MODEL.USE_FRCA = None  # None: follow USE_SDTPS; True: use FRCA; False: skip SDTPS/FRCA
 _C.MODEL.FRCA_NEGATIVE_SLOPE = 0.1  # LeakyReLU negative slope in FRCA
+_C.MODEL.FRCA_USE_CROSS_ATTN = False  # Enable cross-attention between FRCA and DGAF (6 modalities)
+_C.MODEL.FRCA_CROSS_ATTN_HEADS = 8  # Number of attention heads for FRCA cross-attention
 # If train with label smooth, options: 'on', 'off'
 _C.MODEL.IF_LABELSMOOTH = 'on'
 # If train with the contact feature

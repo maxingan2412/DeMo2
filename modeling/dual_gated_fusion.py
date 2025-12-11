@@ -27,7 +27,7 @@ Dual-Gated Adaptive Fusion (DGAF) Module
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 import math
 
 
@@ -897,6 +897,202 @@ class DualGatedAdaptiveFusionV4(nn.Module):
         h_tir_out = h_tir + h_enhance
 
         return h_rgb_out, h_nir_out, h_tir_out
+
+
+class DualGatedAdaptiveFusionV3Multi(nn.Module):
+    """
+    双门控自适应融合 V3 Multi - 支持可变数量模态输入
+
+    核心改进：
+    1. 泛化到 N 个模态（例如 FRCA cross-attention 后的 6 组特征）
+    2. 保留 V3 的 Attention Pooling 和双门控机制
+    3. 输出维度可配置为 N*C 或 C
+
+    设计目的：
+        处理 FRCA cross-attention 后的 6 组特征，进行自适应融合
+
+    流程：
+        输入: N × (B, K, C)  ← FRCA cross-attention 输出 tokens
+              ↓
+        Attention Pooling (N 个可学习 query)
+              ↓
+        N × (B, C)
+              ↓
+        双门控融合 (IEG + MIG)
+              ↓
+        输出: (B, N*C) 或 (B, C)
+
+    Args:
+        feat_dim: 特征维度 (512 for CLIP, 768 for ViT)
+        num_modalities: 模态数量 (3 for 原始, 6 for cross-attention)
+        output_dim: 输出维度 (默认 num_modalities * feat_dim)
+        tau: 熵门控的温度参数
+        init_alpha: α 的初始值（平衡 IEG 和 MIG）
+        num_heads: attention pooling 的头数
+    """
+
+    def __init__(
+        self,
+        feat_dim: int,
+        num_modalities: int = 3,
+        output_dim: int = None,
+        tau: float = 1.0,
+        init_alpha: float = 0.5,
+        num_heads: int = 8,
+    ):
+        super().__init__()
+        self.feat_dim = feat_dim
+        self.num_modalities = num_modalities
+        self.output_dim = output_dim or (num_modalities * feat_dim)
+        self.tau = tau
+        self.num_heads = num_heads
+
+        # ========== Attention Pooling (每个模态独立的可学习 query) ==========
+        scale = feat_dim ** -0.5
+        self.queries = nn.ParameterList([
+            nn.Parameter(scale * torch.randn(1, 1, feat_dim))
+            for _ in range(num_modalities)
+        ])
+
+        # 共享的 attention 层（减少参数）
+        self.attn_pool = nn.MultiheadAttention(
+            embed_dim=feat_dim,
+            num_heads=num_heads,
+            batch_first=True
+        )
+        self.attn_norm = nn.LayerNorm(feat_dim)
+
+        # ========== 信息熵门控 (IEG) ==========
+        self.entropy_proj = nn.Linear(feat_dim, feat_dim)
+
+        # ========== 模态重要性门控 (MIG) ==========
+        self.gate_net = nn.Sequential(
+            nn.Linear(num_modalities * feat_dim, feat_dim),
+            nn.LayerNorm(feat_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(feat_dim, num_modalities),
+            nn.Sigmoid()
+        )
+
+        # ========== 可学习的平衡参数 α ==========
+        self._alpha = nn.Parameter(torch.tensor(init_alpha))
+
+        # ========== 输出投影 ==========
+        if self.output_dim == feat_dim:
+            # 单一融合特征
+            self.output_proj = nn.Sequential(
+                nn.Linear(feat_dim, feat_dim),
+                nn.LayerNorm(feat_dim),
+            )
+            self.modal_enhance = None
+        else:
+            # 增强后拼接（保持 N*C 维度）
+            self.output_proj = None
+            self.modal_enhance = nn.Sequential(
+                nn.Linear(feat_dim, feat_dim),
+                nn.LayerNorm(feat_dim),
+            )
+
+    @property
+    def alpha(self) -> torch.Tensor:
+        """获取约束后的 α 值"""
+        return torch.sigmoid(self._alpha)
+
+    def attention_pooling(
+        self,
+        tokens: torch.Tensor,  # (B, K, C)
+        query: nn.Parameter,   # (1, 1, C)
+    ) -> torch.Tensor:
+        """
+        Attention Pooling: 用可学习 query 从 tokens 中聚合信息
+
+        Returns:
+            pooled: (B, C) 池化后的全局特征
+        """
+        B = tokens.shape[0]
+        query_expanded = query.expand(B, -1, -1)  # (B, 1, C)
+
+        # Cross-attention: query attends to tokens
+        pooled, _ = self.attn_pool(query_expanded, tokens, tokens)  # (B, 1, C)
+        pooled = self.attn_norm(pooled.squeeze(1))  # (B, C)
+
+        return pooled
+
+    def compute_entropy(self, feat: torch.Tensor) -> torch.Tensor:
+        """计算特征的信息熵"""
+        feat_abs = torch.abs(feat) + 1e-8
+        prob = feat_abs / feat_abs.sum(dim=-1, keepdim=True)
+        entropy = -torch.sum(prob * torch.log(prob + 1e-8), dim=-1)
+        return entropy
+
+    def forward(
+        self,
+        tokens_list: List[torch.Tensor],   # N × (B, K, C) - FRCA cross-attention 输出
+    ) -> torch.Tensor:
+        """
+        双门控自适应融合（处理 N 个模态）
+
+        Args:
+            tokens_list: N 个 tokens tensor，每个 (B, K, C)
+
+        Returns:
+            fused_feat: (B, output_dim) - 融合后的特征
+        """
+        assert len(tokens_list) == self.num_modalities, \
+            f"Expected {self.num_modalities} inputs, got {len(tokens_list)}"
+
+        # ========== 1. Attention Pooling ==========
+        # 用可学习 query 从各个模态的 tokens 中聚合信息
+        h_list = [
+            self.attention_pooling(tokens, query)
+            for tokens, query in zip(tokens_list, self.queries)
+        ]  # N × (B, C)
+
+        # ========== 2. 信息熵门控 (IEG) ==========
+        # 计算每个模态的熵和得分
+        scores = []
+        for h in h_list:
+            H = self.compute_entropy(h)  # (B,)
+            z = self.entropy_proj(h).mean(dim=-1)  # (B,)
+            score = z * torch.exp(-H / self.tau)  # (B,)
+            scores.append(score)
+
+        scores = torch.stack(scores, dim=-1)  # (B, N)
+        entropy_weights = F.softmax(scores, dim=-1)  # (B, N)
+
+        # 熵加权融合
+        h_entropy = sum(
+            entropy_weights[:, i:i+1] * h_list[i]
+            for i in range(self.num_modalities)
+        )  # (B, C)
+
+        # ========== 3. 模态重要性门控 (MIG) ==========
+        h_concat = torch.cat(h_list, dim=-1)  # (B, N*C)
+        gates = self.gate_net(h_concat)  # (B, N)
+
+        # 门控加权融合
+        h_importance = sum(
+            gates[:, i:i+1] * h_list[i]
+            for i in range(self.num_modalities)
+        )  # (B, C)
+
+        # ========== 4. 自适应融合 ==========
+        alpha = self.alpha
+        h_fused = alpha * h_entropy + (1 - alpha) * h_importance  # (B, C)
+
+        # ========== 5. 输出 ==========
+        if self.output_dim == self.feat_dim:
+            # 单一融合特征
+            return self.output_proj(h_fused)
+        else:
+            # 增强后拼接（保持 N*C 维度）
+            h_enhance = self.modal_enhance(h_fused)
+
+            # 用融合特征增强各模态
+            h_out_list = [h + h_enhance for h in h_list]
+
+            # 拼接输出
+            return torch.cat(h_out_list, dim=-1)  # (B, N*C)
 
 
 if __name__ == "__main__":

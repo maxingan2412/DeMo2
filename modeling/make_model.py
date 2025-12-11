@@ -13,7 +13,7 @@ from modeling.FRCA import FourierResidualChannelAttention
 from modeling.sacr import SACR
 from modeling.multimodal_sacr import MultiModalSACR, MultiModalSACRv2
 from modeling.trimodal_lif import TrimodalLIF, TrimodalLIFLoss
-from modeling.dual_gated_fusion import DualGatedAdaptiveFusion, DualGatedAdaptiveFusionV2, DualGatedPostFusion, DualGatedAdaptiveFusionV3, DualGatedAdaptiveFusionV4
+from modeling.dual_gated_fusion import DualGatedAdaptiveFusion, DualGatedAdaptiveFusionV2, DualGatedPostFusion, DualGatedAdaptiveFusionV3, DualGatedAdaptiveFusionV3Multi, DualGatedAdaptiveFusionV4
 import torch
 
 
@@ -440,6 +440,8 @@ class DeMoBeiyong(nn.Module):
 
 
 # FRCA的逻辑有点问题，现在如果不用frca 会默认进入sdtps ，我并不想对比这两个，我是想直接用frca 取代stdps。而不是当frca是false 的时候用sdtps、
+# 增加 frca 和 dgaf中的模块，也就是 frca出来的特征 每个特征都与其他两个特征 分别 进行 cross attention。（特征本身作为q），这样 frac输出的三组特征就变成了6组。这六组特征都输入到 dgaf中。 在demo这个类上做修改，先不用设计多组实验。直接给出训练命令 命令基于run_ablation_frca_201.sh下面的最后一个设定修改
+
 
 
 # ============================================================================
@@ -482,6 +484,10 @@ class DeMo(nn.Module):
         self.USE_FRCA = cfg.MODEL.USE_FRCA  # FRCA 替代 SDTPS（显式 False 时不再回落到 SDTPS）
         self.USE_DGAF = cfg.MODEL.USE_DGAF
         self.GLOBAL_LOCAL = cfg.MODEL.GLOBAL_LOCAL
+
+        # FRCA cross-attention 配置
+        self.FRCA_USE_CROSS_ATTN = getattr(cfg.MODEL, 'FRCA_USE_CROSS_ATTN', False)
+        self.FRCA_CROSS_ATTN_HEADS = getattr(cfg.MODEL, 'FRCA_CROSS_ATTN_HEADS', cfg.MODEL.DGAF_NUM_HEADS)
 
         # Decide token-selection path:
         # - USE_FRCA=True  -> FRCA
@@ -534,12 +540,27 @@ class DeMo(nn.Module):
                 up_scale=1
             )
 
-            # FRCA 分类器（3个模态拼接）
-            self.classifier_frca = nn.Linear(3 * self.feat_dim, self.num_classes, bias=False)
-            self.classifier_frca.apply(weights_init_classifier)
-            self.bottleneck_frca = nn.BatchNorm1d(3 * self.feat_dim)
-            self.bottleneck_frca.bias.requires_grad_(False)
-            self.bottleneck_frca.apply(weights_init_kaiming)
+            # Cross-attention module (FRCA → DGAF 之间)
+            # 只有在 FRCA + DGAF 都启用时才添加
+            if self.USE_DGAF and self.FRCA_USE_CROSS_ATTN:
+                self.frca_cross_attn = nn.MultiheadAttention(
+                    embed_dim=self.feat_dim,
+                    num_heads=self.FRCA_CROSS_ATTN_HEADS,
+                    batch_first=True,
+                )
+                self.frca_cross_norm = nn.LayerNorm(self.feat_dim)
+
+            # FRCA 分类器（只在不使用 DGAF 时需要）
+            if not self.USE_DGAF:
+                # FRCA-only 不支持 cross-attention（cross-attention 只在 DGAF 路径中使用）
+                # 始终使用 3C 维度
+                frca_out_dim = 3 * self.feat_dim
+
+                self.classifier_frca = nn.Linear(frca_out_dim, self.num_classes, bias=False)
+                self.classifier_frca.apply(weights_init_classifier)
+                self.bottleneck_frca = nn.BatchNorm1d(frca_out_dim)
+                self.bottleneck_frca.bias.requires_grad_(False)
+                self.bottleneck_frca.apply(weights_init_kaiming)
 
         # SDTPS: Token selection module
         elif self.use_sdtps:
@@ -569,27 +590,49 @@ class DeMo(nn.Module):
         if self.USE_DGAF:
             self.DGAF_VERSION = cfg.MODEL.DGAF_VERSION
 
+            # 确定 DGAF 的模态数量
+            # 如果启用 FRCA + cross-attention，则为 6 个模态
+            # 否则为 3 个模态
+            if self.use_frca and self.FRCA_USE_CROSS_ATTN and self.DGAF_VERSION == 'v3':
+                dgaf_modalities = 6
+            else:
+                dgaf_modalities = 3
+
+            dgaf_out_dim = dgaf_modalities * self.feat_dim
+
             if self.DGAF_VERSION == 'v3':
                 # V3: Processes patch tokens directly
-                self.dgaf = DualGatedAdaptiveFusionV3(
-                    feat_dim=self.feat_dim,
-                    output_dim=3 * self.feat_dim,
-                    tau=cfg.MODEL.DGAF_TAU,
-                    init_alpha=cfg.MODEL.DGAF_INIT_ALPHA,
-                    num_heads=cfg.MODEL.DGAF_NUM_HEADS,
-                )
+                if dgaf_modalities == 6:
+                    # 使用 Multi 版本支持 6 个模态
+                    self.dgaf = DualGatedAdaptiveFusionV3Multi(
+                        feat_dim=self.feat_dim,
+                        num_modalities=dgaf_modalities,
+                        output_dim=dgaf_out_dim,
+                        tau=cfg.MODEL.DGAF_TAU,
+                        init_alpha=cfg.MODEL.DGAF_INIT_ALPHA,
+                        num_heads=cfg.MODEL.DGAF_NUM_HEADS,
+                    )
+                else:
+                    # 使用原始 V3 版本（3 个模态）
+                    self.dgaf = DualGatedAdaptiveFusionV3(
+                        feat_dim=self.feat_dim,
+                        output_dim=dgaf_out_dim,
+                        tau=cfg.MODEL.DGAF_TAU,
+                        init_alpha=cfg.MODEL.DGAF_INIT_ALPHA,
+                        num_heads=cfg.MODEL.DGAF_NUM_HEADS,
+                    )
             else:
                 # V1: Processes aggregated features
                 self.dgaf = DualGatedPostFusion(
                     feat_dim=self.feat_dim,
-                    output_dim=3 * self.feat_dim,
+                    output_dim=dgaf_out_dim,
                     tau=cfg.MODEL.DGAF_TAU,
                     init_alpha=cfg.MODEL.DGAF_INIT_ALPHA,
                 )
 
-            self.classifier_dgaf = nn.Linear(3 * self.feat_dim, self.num_classes, bias=False)
+            self.classifier_dgaf = nn.Linear(dgaf_out_dim, self.num_classes, bias=False)
             self.classifier_dgaf.apply(weights_init_classifier)
-            self.bottleneck_dgaf = nn.BatchNorm1d(3 * self.feat_dim)
+            self.bottleneck_dgaf = nn.BatchNorm1d(dgaf_out_dim)
             self.bottleneck_dgaf.bias.requires_grad_(False)
             self.bottleneck_dgaf.apply(weights_init_kaiming)
 
@@ -845,16 +888,53 @@ class DeMo(nn.Module):
                 NI_enh = NI_frca.flatten(2).permute(0, 2, 1)
                 TI_enh = TI_frca.flatten(2).permute(0, 2, 1)
 
+                # Cross-attention 逻辑（如果启用）
+                if self.FRCA_USE_CROSS_ATTN and hasattr(self, 'frca_cross_attn'):
+                    # 定义 cross-attention 辅助函数
+                    def cross_attend(query, kv):
+                        """
+                        query 作为 q，kv 作为 k 和 v 进行 cross-attention
+                        返回：attn_out + query（残差连接）
+                        """
+                        attn_out, _ = self.frca_cross_attn(query, kv, kv)
+                        return self.frca_cross_norm(attn_out + query)
+
+                    # 6 组 cross-attention 特征
+                    # RGB 与其他模态交叉
+                    RGB_q_NI = cross_attend(RGB_enh, NI_enh)  # RGB 作为 q, NI 作为 kv
+                    RGB_q_TI = cross_attend(RGB_enh, TI_enh)  # RGB 作为 q, TI 作为 kv
+
+                    # NI 与其他模态交叉
+                    NI_q_RGB = cross_attend(NI_enh, RGB_enh)  # NI 作为 q, RGB 作为 kv
+                    NI_q_TI = cross_attend(NI_enh, TI_enh)   # NI 作为 q, TI 作为 kv
+
+                    # TI 与其他模态交叉
+                    TI_q_RGB = cross_attend(TI_enh, RGB_enh)  # TI 作为 q, RGB 作为 kv
+                    TI_q_NI = cross_attend(TI_enh, NI_enh)   # TI 作为 q, NI 作为 kv
+
+                    # 将 6 组特征传递给 DGAF（使用列表）
+                    dgaf_inputs = [RGB_q_NI, RGB_q_TI, NI_q_RGB, NI_q_TI, TI_q_RGB, TI_q_NI]
+                else:
+                    # 不使用 cross-attention，保持原始 3 组特征
+                    dgaf_inputs = [RGB_enh, NI_enh, TI_enh]
+
             else:  # USE_SDTPS
                 # SDTPS: Token selection
                 RGB_enh, NI_enh, TI_enh, _, _, _ = self.sdtps(
                     RGB_cash, NI_cash, TI_cash, RGB_global, NI_global, TI_global
                 )
+                dgaf_inputs = [RGB_enh, NI_enh, TI_enh]
 
             # DGAF: Adaptive fusion
             if self.DGAF_VERSION == 'v3':
                 # ✅ 推荐：V3 直接处理 enhanced tokens（保留局部细节）
-                dgaf_feat = self.dgaf(RGB_enh, NI_enh, TI_enh)
+                # 判断是使用 Multi 版本（列表输入）还是原始版本（单独参数）
+                if isinstance(self.dgaf, DualGatedAdaptiveFusionV3Multi):
+                    # Multi 版本：接受列表输入（6 组或 3 组）
+                    dgaf_feat = self.dgaf(dgaf_inputs)
+                else:
+                    # 原始 V3 版本：接受 3 个单独参数
+                    dgaf_feat = self.dgaf(dgaf_inputs[0], dgaf_inputs[1], dgaf_inputs[2])
             else:
                 # ⚠️ V1: 需要 GLOBAL_LOCAL（双重压缩）
                 if not self.GLOBAL_LOCAL:
