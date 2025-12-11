@@ -49,6 +49,10 @@ echo "==========================================================================
 echo "结果目录: ${EXP_DIR_201}"
 echo "=============================================================================="
 
+# 基础配置文件与通用开关（确保不混用 SDTPS）
+BASE_CFG="configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml"
+COMMON_OFF="MODEL.USE_SDTPS False MODEL.GLOBAL_LOCAL False"
+
 # 构建 log 文件名（包含可选标识）
 if [ -n "$EXP_TAG" ]; then
     LOG_SUFFIX="_${EXP_TAG}"
@@ -63,22 +67,22 @@ echo ""
 echo "Starting RGBNT201 FRCA experiments on 4 GPUs..."
 
 # GPU 0: Baseline
-CUDA_VISIBLE_DEVICES=0 nohup python train_net.py --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml MODEL.USE_FRCA False MODEL.USE_SDTPS False MODEL.USE_DGAF False MODEL.GLOBAL_LOCAL False > ${EXP_DIR_201}/01_baseline${LOG_SUFFIX}.log 2>&1 &
+CUDA_VISIBLE_DEVICES=0 nohup python train_net.py --config_file ${BASE_CFG} ${COMMON_OFF} MODEL.USE_FRCA False MODEL.USE_DGAF False > ${EXP_DIR_201}/01_baseline${LOG_SUFFIX}.log 2>&1 &
 PID_1=$!
 echo "  GPU 0: Baseline, PID: ${PID_1}"
 
 # GPU 1: FRCA only (no DGAF, no GLOBAL_LOCAL)
-CUDA_VISIBLE_DEVICES=1 nohup python train_net.py --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml MODEL.USE_FRCA True MODEL.USE_SDTPS False MODEL.USE_DGAF False MODEL.GLOBAL_LOCAL False > ${EXP_DIR_201}/02_frca_only${LOG_SUFFIX}.log 2>&1 &
+CUDA_VISIBLE_DEVICES=1 nohup python train_net.py --config_file ${BASE_CFG} ${COMMON_OFF} MODEL.USE_FRCA True MODEL.USE_DGAF False > ${EXP_DIR_201}/02_frca_only${LOG_SUFFIX}.log 2>&1 &
 PID_2=$!
 echo "  GPU 1: FRCA only, PID: ${PID_2}"
 
 # GPU 2: DGAF V3 only
-CUDA_VISIBLE_DEVICES=2 nohup python train_net.py --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml MODEL.USE_FRCA False MODEL.USE_SDTPS False MODEL.USE_DGAF True MODEL.DGAF_VERSION v3 MODEL.GLOBAL_LOCAL False > ${EXP_DIR_201}/03_dgaf_v3_only${LOG_SUFFIX}.log 2>&1 &
+CUDA_VISIBLE_DEVICES=2 nohup python train_net.py --config_file ${BASE_CFG} ${COMMON_OFF} MODEL.USE_FRCA False MODEL.USE_DGAF True MODEL.DGAF_VERSION v3 > ${EXP_DIR_201}/03_dgaf_v3_only${LOG_SUFFIX}.log 2>&1 &
 PID_3=$!
 echo "  GPU 2: DGAF V3 only, PID: ${PID_3}"
 
 # GPU 3: FRCA + DGAF V3
-CUDA_VISIBLE_DEVICES=3 nohup python train_net.py --config_file configs/RGBNT201/DeMo_SDTPS_DGAF_ablation.yml MODEL.USE_FRCA True MODEL.USE_SDTPS False MODEL.USE_DGAF True MODEL.DGAF_VERSION v3 MODEL.GLOBAL_LOCAL False > ${EXP_DIR_201}/04_frca_dgaf_v3${LOG_SUFFIX}.log 2>&1 &
+CUDA_VISIBLE_DEVICES=3 nohup python train_net.py --config_file ${BASE_CFG} ${COMMON_OFF} MODEL.USE_FRCA True MODEL.USE_DGAF True MODEL.DGAF_VERSION v3 > ${EXP_DIR_201}/04_frca_dgaf_v3${LOG_SUFFIX}.log 2>&1 &
 PID_4=$!
 echo "  GPU 3: FRCA + DGAF V3, PID: ${PID_4}"
 

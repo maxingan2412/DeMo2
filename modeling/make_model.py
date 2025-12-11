@@ -9,6 +9,7 @@ import copy
 from modeling.meta_arch import build_transformer, weights_init_classifier, weights_init_kaiming
 from modeling.moe.AttnMOE import GeneralFusion, QuickGELU
 from modeling.sdtps import MultiModalSDTPS
+from modeling.FRCA import FourierResidualChannelAttention
 from modeling.sacr import SACR
 from modeling.multimodal_sacr import MultiModalSACR, MultiModalSACRv2
 from modeling.trimodal_lif import TrimodalLIF, TrimodalLIFLoss
@@ -438,8 +439,7 @@ class DeMoBeiyong(nn.Module):
                 return ori
 
 
-#引入@FRCA 中的模块，的输入输出均为 (B, C, H, W)，写一个开关，开启的时候 把sdtps换成这个FRCA模块。其余不变。开关的配置要写入到 DeMo_SDTPS_DGAF_ablation yml文件里面，可以命名为 USE_FRCA，默认值为 False。 新加入这个配置也要在 defaults.py中添加。默认值为 False。
-#新写一个测试脚本，脚本仿照run_ablation_4arch_rgbnt201，进行四组实验。设置 USE_FRCA 为 True，测试 FRCA 模块的效果。
+# FRCA的逻辑有点问题，现在如果不用frca 会默认进入sdtps ，我并不想对比这两个，我是想直接用frca 取代stdps。而不是当frca是false 的时候用sdtps、
 
 
 # ============================================================================
@@ -479,9 +479,22 @@ class DeMo(nn.Module):
 
         # Module flags
         self.USE_SDTPS = cfg.MODEL.USE_SDTPS
-        self.USE_FRCA = cfg.MODEL.USE_FRCA  # FRCA 替代 SDTPS
+        self.USE_FRCA = cfg.MODEL.USE_FRCA  # FRCA 替代 SDTPS（显式 False 时不再回落到 SDTPS）
         self.USE_DGAF = cfg.MODEL.USE_DGAF
         self.GLOBAL_LOCAL = cfg.MODEL.GLOBAL_LOCAL
+
+        # Decide token-selection path:
+        # - USE_FRCA=True  -> FRCA
+        # - USE_FRCA=None  -> follow USE_SDTPS
+        # - USE_FRCA=False -> no token selector (baseline / DGAF-only)
+        self.token_selector = None
+        if self.USE_FRCA is True:
+            self.token_selector = 'frca'
+        elif self.USE_FRCA is None and self.USE_SDTPS:
+            self.token_selector = 'sdtps'
+
+        self.use_frca = self.token_selector == 'frca'
+        self.use_sdtps = self.token_selector == 'sdtps'
 
         # Global-Local Fusion layers
         self.pool = nn.AdaptiveAvgPool1d(1)
@@ -502,7 +515,7 @@ class DeMo(nn.Module):
         )
 
         # ========== FRCA 或 SDTPS 模块（二选一）==========
-        if self.USE_FRCA:
+        if self.use_frca:
             # FRCA: Fourier Residual Channel Attention
             # 输入/输出: (B, C, H, W)
             self.frca_rgb = FourierResidualChannelAttention(
@@ -529,7 +542,7 @@ class DeMo(nn.Module):
             self.bottleneck_frca.apply(weights_init_kaiming)
 
         # SDTPS: Token selection module
-        elif self.USE_SDTPS:
+        elif self.use_sdtps:
             h, w = cfg.INPUT.SIZE_TRAIN
             stride_h, stride_w = cfg.MODEL.STRIDE_SIZE
             num_patches = (h // stride_h) * (w // stride_w)
@@ -675,7 +688,7 @@ class DeMo(nn.Module):
         # ========================================================================
         # 分支1: Baseline (无 SDTPS, 无 DGAF)
         # ========================================================================
-        if not self.USE_SDTPS and not self.USE_DGAF:
+        if not self.use_sdtps and not self.use_frca and not self.USE_DGAF:
             # 直接拼接全局特征
             ori_feat = torch.cat([RGB_global, NI_global, TI_global], dim=-1)
 
@@ -694,18 +707,20 @@ class DeMo(nn.Module):
         # ========================================================================
         # 分支2: SDTPS/FRCA Only (有 SDTPS 或 FRCA, 无 DGAF)
         # ========================================================================
-        elif (self.USE_SDTPS or self.USE_FRCA) and not self.USE_DGAF:
+        elif (self.use_sdtps or self.use_frca) and not self.USE_DGAF:
             # Helper function
             def fuse_global_local(feat_cash, feat_global, pool_layer, reduce_layer):
                 feat_local = pool_layer(feat_cash.permute(0, 2, 1)).squeeze(-1)
                 return reduce_layer(torch.cat([feat_global, feat_local], dim=-1))
 
-            if self.USE_FRCA:
+            if self.use_frca:
                 # FRCA: 将 tokens (B, N, C) 转为 (B, C, H, W)
-                h, w = self.image_size[0] // 16, self.image_size[1] // 16  # patch grid
-                RGB_img = RGB_cash.permute(0, 2, 1).reshape(B, self.feat_dim, h, w)
-                NI_img = NI_cash.permute(0, 2, 1).reshape(B, self.feat_dim, h, w)
-                TI_img = TI_cash.permute(0, 2, 1).reshape(B, self.feat_dim, h, w)
+                B = RGB_cash.size(0)
+                patch_h = self.image_size[0] // self.cfg.MODEL.STRIDE_SIZE[0]
+                patch_w = self.image_size[1] // self.cfg.MODEL.STRIDE_SIZE[1]
+                RGB_img = RGB_cash.permute(0, 2, 1).reshape(B, self.feat_dim, patch_h, patch_w)
+                NI_img = NI_cash.permute(0, 2, 1).reshape(B, self.feat_dim, patch_h, patch_w)
+                TI_img = TI_cash.permute(0, 2, 1).reshape(B, self.feat_dim, patch_h, patch_w)
 
                 # FRCA 处理
                 RGB_frca = self.frca_rgb(RGB_img)  # (B, C, H, W)
@@ -737,7 +752,7 @@ class DeMo(nn.Module):
                         RGB_score = self.classifier_r(self.bottleneck_r(RGB_global))
                         NI_score = self.classifier_n(self.bottleneck_n(NI_global))
                         TI_score = self.classifier_t(self.bottleneck_t(TI_global))
-                        return (frca_score, frca_feat, RGB_score, RGB_global, NI_score, NI_global, TI_score, TI_global)
+                    return (frca_score, frca_feat, RGB_score, RGB_global, NI_score, NI_global, TI_score, TI_global)
                 else:
                     return frca_feat
 
@@ -774,7 +789,7 @@ class DeMo(nn.Module):
         # ========================================================================
         # 分支3: DGAF Only (无 SDTPS, 有 DGAF)
         # ========================================================================
-        elif not self.USE_SDTPS and self.USE_DGAF:
+        elif not self.use_sdtps and not self.use_frca and self.USE_DGAF:
             # Helper function
             def fuse_global_local(feat_cash, feat_global, pool_layer, reduce_layer):
                 feat_local = pool_layer(feat_cash.permute(0, 2, 1)).squeeze(-1)
@@ -811,13 +826,14 @@ class DeMo(nn.Module):
         # ========================================================================
         # 优化：优先使用 V3（避免双重信息损失）
         # ========================================================================
-        else:  # (self.USE_SDTPS or self.USE_FRCA) and self.USE_DGAF
-            if self.USE_FRCA:
+        else:  # (self.use_sdtps or self.use_frca) and self.USE_DGAF
+            if self.use_frca:
                 # FRCA: 将 tokens 转为 (B, C, H, W)
-                h, w = self.image_size[0] // 16, self.image_size[1] // 16
-                RGB_img = RGB_cash.permute(0, 2, 1).reshape(-1, self.feat_dim, h, w)
-                NI_img = NI_cash.permute(0, 2, 1).reshape(-1, self.feat_dim, h, w)
-                TI_img = TI_cash.permute(0, 2, 1).reshape(-1, self.feat_dim, h, w)
+                patch_h = self.image_size[0] // self.cfg.MODEL.STRIDE_SIZE[0]
+                patch_w = self.image_size[1] // self.cfg.MODEL.STRIDE_SIZE[1]
+                RGB_img = RGB_cash.permute(0, 2, 1).reshape(-1, self.feat_dim, patch_h, patch_w)
+                NI_img = NI_cash.permute(0, 2, 1).reshape(-1, self.feat_dim, patch_h, patch_w)
+                TI_img = TI_cash.permute(0, 2, 1).reshape(-1, self.feat_dim, patch_h, patch_w)
 
                 # FRCA 处理
                 RGB_frca = self.frca_rgb(RGB_img)

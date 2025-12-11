@@ -69,6 +69,9 @@ _C.MODEL.MULTIMODAL_SACR_VERSION = 'v1' # 'v1' or 'v2' (v2 has cross-modal atten
 _C.MODEL.FUSED_LOSS_WEIGHT = 0.5  # Fused branch loss weight (auxiliary supervision)
 # SDTPS CrossModalAttention weight sharing
 _C.MODEL.SDTPS_SHARE_CROSS_ATTN = False  # Per-modality sharing (3 modules, -67% params)
+# FRCA: Fourier Residual Channel Attention (replaces SDTPS when enabled)
+_C.MODEL.USE_FRCA = None  # None: follow USE_SDTPS; True: use FRCA; False: skip SDTPS/FRCA
+_C.MODEL.FRCA_NEGATIVE_SLOPE = 0.1  # LeakyReLU negative slope in FRCA
 # If train with label smooth, options: 'on', 'off'
 _C.MODEL.IF_LABELSMOOTH = 'on'
 # If train with the contact feature
