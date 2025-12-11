@@ -575,6 +575,9 @@ class DualGatedAdaptiveFusionV3(nn.Module):
               ↓
         输出: (B, 3C)
 
+
+
+
     Args:
         feat_dim: 特征维度 (512 for CLIP, 768 for ViT)
         tau: 熵门控的温度参数
