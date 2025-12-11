@@ -438,6 +438,10 @@ class DeMoBeiyong(nn.Module):
                 return ori
 
 
+#引入@FRCA 中的模块，的输入输出均为 (B, C, H, W)，写一个开关，开启的时候 把sdtps换成这个FRCA模块。其余不变。开关的配置要写入到 DeMo_SDTPS_DGAF_ablation yml文件里面，可以命名为 USE_FRCA，默认值为 False。 新加入这个配置也要在 defaults.py中添加。默认值为 False。
+#新写一个测试脚本，脚本仿照run_ablation_4arch_rgbnt201，进行四组实验。设置 USE_FRCA 为 True，测试 FRCA 模块的效果。
+
+
 # ============================================================================
 # DeMo: 简化版本（去除 SACR/LIF/HDM/ATM，保留 SDTPS/DGAF/Baseline）
 # ============================================================================
@@ -475,6 +479,7 @@ class DeMo(nn.Module):
 
         # Module flags
         self.USE_SDTPS = cfg.MODEL.USE_SDTPS
+        self.USE_FRCA = cfg.MODEL.USE_FRCA  # FRCA 替代 SDTPS
         self.USE_DGAF = cfg.MODEL.USE_DGAF
         self.GLOBAL_LOCAL = cfg.MODEL.GLOBAL_LOCAL
 
@@ -496,8 +501,35 @@ class DeMo(nn.Module):
             QuickGELU()
         )
 
+        # ========== FRCA 或 SDTPS 模块（二选一）==========
+        if self.USE_FRCA:
+            # FRCA: Fourier Residual Channel Attention
+            # 输入/输出: (B, C, H, W)
+            self.frca_rgb = FourierResidualChannelAttention(
+                channels=self.feat_dim,
+                negative_slope=cfg.MODEL.FRCA_NEGATIVE_SLOPE,
+                up_scale=1  # 保持尺寸不变
+            )
+            self.frca_nir = FourierResidualChannelAttention(
+                channels=self.feat_dim,
+                negative_slope=cfg.MODEL.FRCA_NEGATIVE_SLOPE,
+                up_scale=1
+            )
+            self.frca_tir = FourierResidualChannelAttention(
+                channels=self.feat_dim,
+                negative_slope=cfg.MODEL.FRCA_NEGATIVE_SLOPE,
+                up_scale=1
+            )
+
+            # FRCA 分类器（3个模态拼接）
+            self.classifier_frca = nn.Linear(3 * self.feat_dim, self.num_classes, bias=False)
+            self.classifier_frca.apply(weights_init_classifier)
+            self.bottleneck_frca = nn.BatchNorm1d(3 * self.feat_dim)
+            self.bottleneck_frca.bias.requires_grad_(False)
+            self.bottleneck_frca.apply(weights_init_kaiming)
+
         # SDTPS: Token selection module
-        if self.USE_SDTPS:
+        elif self.USE_SDTPS:
             h, w = cfg.INPUT.SIZE_TRAIN
             stride_h, stride_w = cfg.MODEL.STRIDE_SIZE
             num_patches = (h // stride_h) * (w // stride_w)
@@ -660,42 +692,84 @@ class DeMo(nn.Module):
                 return ori_feat
 
         # ========================================================================
-        # 分支2: SDTPS Only (有 SDTPS, 无 DGAF)
+        # 分支2: SDTPS/FRCA Only (有 SDTPS 或 FRCA, 无 DGAF)
         # ========================================================================
-        elif self.USE_SDTPS and not self.USE_DGAF:
+        elif (self.USE_SDTPS or self.USE_FRCA) and not self.USE_DGAF:
             # Helper function
             def fuse_global_local(feat_cash, feat_global, pool_layer, reduce_layer):
                 feat_local = pool_layer(feat_cash.permute(0, 2, 1)).squeeze(-1)
                 return reduce_layer(torch.cat([feat_global, feat_local], dim=-1))
 
-            # SDTPS: Token selection
-            RGB_enh, NI_enh, TI_enh, _, _, _ = self.sdtps(
-                RGB_cash, NI_cash, TI_cash, RGB_global, NI_global, TI_global
-            )
+            if self.USE_FRCA:
+                # FRCA: 将 tokens (B, N, C) 转为 (B, C, H, W)
+                h, w = self.image_size[0] // 16, self.image_size[1] // 16  # patch grid
+                RGB_img = RGB_cash.permute(0, 2, 1).reshape(B, self.feat_dim, h, w)
+                NI_img = NI_cash.permute(0, 2, 1).reshape(B, self.feat_dim, h, w)
+                TI_img = TI_cash.permute(0, 2, 1).reshape(B, self.feat_dim, h, w)
 
-            # Feature aggregation
-            if self.GLOBAL_LOCAL:
-                RGB_final = fuse_global_local(RGB_enh, RGB_global, self.pool, self.rgb_reduce)
-                NI_final = fuse_global_local(NI_enh, NI_global, self.pool, self.nir_reduce)
-                TI_final = fuse_global_local(TI_enh, TI_global, self.pool, self.tir_reduce)
-            else:
-                RGB_final = RGB_enh.mean(dim=1)
-                NI_final = NI_enh.mean(dim=1)
-                TI_final = TI_enh.mean(dim=1)
+                # FRCA 处理
+                RGB_frca = self.frca_rgb(RGB_img)  # (B, C, H, W)
+                NI_frca = self.frca_nir(NI_img)
+                TI_frca = self.frca_tir(TI_img)
 
-            sdtps_feat = torch.cat([RGB_final, NI_final, TI_final], dim=-1)
+                # 转回 tokens 格式并 flatten
+                RGB_frca_flat = RGB_frca.flatten(2).permute(0, 2, 1)  # (B, H*W, C)
+                NI_frca_flat = NI_frca.flatten(2).permute(0, 2, 1)
+                TI_frca_flat = TI_frca.flatten(2).permute(0, 2, 1)
 
-            if self.training:
-                sdtps_score = self.classifier_sdtps(self.bottleneck_sdtps(sdtps_feat))
-                if self.direct:
-                    return (sdtps_score, sdtps_feat)
+                # Mean pooling 或 fuse_global_local
+                if self.GLOBAL_LOCAL:
+                    RGB_final = fuse_global_local(RGB_frca_flat, RGB_global, self.pool, self.rgb_reduce)
+                    NI_final = fuse_global_local(NI_frca_flat, NI_global, self.pool, self.nir_reduce)
+                    TI_final = fuse_global_local(TI_frca_flat, TI_global, self.pool, self.tir_reduce)
                 else:
-                    RGB_score = self.classifier_r(self.bottleneck_r(RGB_global))
-                    NI_score = self.classifier_n(self.bottleneck_n(NI_global))
-                    TI_score = self.classifier_t(self.bottleneck_t(TI_global))
-                    return (sdtps_score, sdtps_feat, RGB_score, RGB_global, NI_score, NI_global, TI_score, TI_global)
-            else:
-                return sdtps_feat
+                    RGB_final = RGB_frca_flat.mean(dim=1)
+                    NI_final = NI_frca_flat.mean(dim=1)
+                    TI_final = TI_frca_flat.mean(dim=1)
+
+                frca_feat = torch.cat([RGB_final, NI_final, TI_final], dim=-1)
+
+                if self.training:
+                    frca_score = self.classifier_frca(self.bottleneck_frca(frca_feat))
+                    if self.direct:
+                        return (frca_score, frca_feat)
+                    else:
+                        RGB_score = self.classifier_r(self.bottleneck_r(RGB_global))
+                        NI_score = self.classifier_n(self.bottleneck_n(NI_global))
+                        TI_score = self.classifier_t(self.bottleneck_t(TI_global))
+                        return (frca_score, frca_feat, RGB_score, RGB_global, NI_score, NI_global, TI_score, TI_global)
+                else:
+                    return frca_feat
+
+            else:  # USE_SDTPS
+                # SDTPS: Token selection
+                RGB_enh, NI_enh, TI_enh, _, _, _ = self.sdtps(
+                    RGB_cash, NI_cash, TI_cash, RGB_global, NI_global, TI_global
+                )
+
+                # Feature aggregation
+                if self.GLOBAL_LOCAL:
+                    RGB_final = fuse_global_local(RGB_enh, RGB_global, self.pool, self.rgb_reduce)
+                    NI_final = fuse_global_local(NI_enh, NI_global, self.pool, self.nir_reduce)
+                    TI_final = fuse_global_local(TI_enh, TI_global, self.pool, self.tir_reduce)
+                else:
+                    RGB_final = RGB_enh.mean(dim=1)
+                    NI_final = NI_enh.mean(dim=1)
+                    TI_final = TI_enh.mean(dim=1)
+
+                sdtps_feat = torch.cat([RGB_final, NI_final, TI_final], dim=-1)
+
+                if self.training:
+                    sdtps_score = self.classifier_sdtps(self.bottleneck_sdtps(sdtps_feat))
+                    if self.direct:
+                        return (sdtps_score, sdtps_feat)
+                    else:
+                        RGB_score = self.classifier_r(self.bottleneck_r(RGB_global))
+                        NI_score = self.classifier_n(self.bottleneck_n(NI_global))
+                        TI_score = self.classifier_t(self.bottleneck_t(TI_global))
+                        return (sdtps_score, sdtps_feat, RGB_score, RGB_global, NI_score, NI_global, TI_score, TI_global)
+                else:
+                    return sdtps_feat
 
         # ========================================================================
         # 分支3: DGAF Only (无 SDTPS, 有 DGAF)
@@ -733,27 +807,42 @@ class DeMo(nn.Module):
                 return dgaf_feat
 
         # ========================================================================
-        # 分支4: SDTPS + DGAF (有 SDTPS, 有 DGAF)
+        # 分支4: SDTPS/FRCA + DGAF (有 SDTPS/FRCA, 有 DGAF)
         # ========================================================================
         # 优化：优先使用 V3（避免双重信息损失）
-        # - SDTPS masking + pool + reduce = 双重压缩（V1的问题）
-        # - V3 直接处理 tokens，保留局部细节
         # ========================================================================
-        else:  # self.USE_SDTPS and self.USE_DGAF
-            # SDTPS: Token selection
-            RGB_enh, NI_enh, TI_enh, _, _, _ = self.sdtps(
-                RGB_cash, NI_cash, TI_cash, RGB_global, NI_global, TI_global
-            )
+        else:  # (self.USE_SDTPS or self.USE_FRCA) and self.USE_DGAF
+            if self.USE_FRCA:
+                # FRCA: 将 tokens 转为 (B, C, H, W)
+                h, w = self.image_size[0] // 16, self.image_size[1] // 16
+                RGB_img = RGB_cash.permute(0, 2, 1).reshape(-1, self.feat_dim, h, w)
+                NI_img = NI_cash.permute(0, 2, 1).reshape(-1, self.feat_dim, h, w)
+                TI_img = TI_cash.permute(0, 2, 1).reshape(-1, self.feat_dim, h, w)
+
+                # FRCA 处理
+                RGB_frca = self.frca_rgb(RGB_img)
+                NI_frca = self.frca_nir(NI_img)
+                TI_frca = self.frca_tir(TI_img)
+
+                # 转回 tokens 格式供 DGAF
+                RGB_enh = RGB_frca.flatten(2).permute(0, 2, 1)
+                NI_enh = NI_frca.flatten(2).permute(0, 2, 1)
+                TI_enh = TI_frca.flatten(2).permute(0, 2, 1)
+
+            else:  # USE_SDTPS
+                # SDTPS: Token selection
+                RGB_enh, NI_enh, TI_enh, _, _, _ = self.sdtps(
+                    RGB_cash, NI_cash, TI_cash, RGB_global, NI_global, TI_global
+                )
 
             # DGAF: Adaptive fusion
             if self.DGAF_VERSION == 'v3':
-                # ✅ 推荐：V3 直接处理 SDTPS-selected tokens（保留局部细节）
+                # ✅ 推荐：V3 直接处理 enhanced tokens（保留局部细节）
                 dgaf_feat = self.dgaf(RGB_enh, NI_enh, TI_enh)
-
             else:
-                # ⚠️ V1: 需要 GLOBAL_LOCAL（双重压缩，效果较差）
+                # ⚠️ V1: 需要 GLOBAL_LOCAL（双重压缩）
                 if not self.GLOBAL_LOCAL:
-                    raise ValueError("SDTPS + DGAF V1 requires GLOBAL_LOCAL=True")
+                    raise ValueError("DGAF V1 requires GLOBAL_LOCAL=True")
 
                 def fuse_global_local(feat_cash, feat_global, pool_layer, reduce_layer):
                     feat_local = pool_layer(feat_cash.permute(0, 2, 1)).squeeze(-1)
@@ -1019,6 +1108,10 @@ class DeMo_Parallel(nn.Module):
                 feat_dgaf_rgb, feat_dgaf_nir, feat_dgaf_tir,
                 feat_fused_rgb, feat_fused_nir, feat_fused_tir,
             ], dim=-1)  # (B, 9C)
+
+
+
+
 
 
 __factory_T_type = {
