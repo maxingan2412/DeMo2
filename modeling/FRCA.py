@@ -117,7 +117,10 @@ class FourierResidualChannelAttention(nn.Module):
 
         # 铺成 2D 网格并做 2D FFT
         grid, meta = vector_to_grid(chan_desc)      # (B, 1, Hc, Wc)
-        spec = torch.fft.fft2(grid)                 # 复数张量 (B, 1, Hc, Wc)                                                                                                                                                                     # 微信公众号:CV缝合救星
+
+        # Mixed precision safety: cuFFT requires power-of-two sizes for half; compute FFT in fp32.
+        grid_fp32 = grid.float()
+        spec = torch.fft.fft2(grid_fp32)            # 复数张量 (B, 1, Hc, Wc)                                                                                                                                                                     # 微信公众号:CV缝合救星
         amp = torch.abs(spec)
         pha = torch.angle(spec)
 
@@ -131,7 +134,7 @@ class FourierResidualChannelAttention(nn.Module):
         # 2D ICFFT -> 得到调制后的网格，再还原为通道向量
         grid_ifft = torch.fft.ifft2(spec_new).real   # (B, 1, Hc, Wc)
         weight_vec = grid_to_vector(grid_ifft, meta) # (B, C, 1, 1)
-        weight = torch.sigmoid(weight_vec)           # channel-wise 权重
+        weight = torch.sigmoid(weight_vec).to(feat.dtype)  # channel-wise 权重
 
         # 注意力 + 残差
         y = feat * weight
