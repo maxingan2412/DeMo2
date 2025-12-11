@@ -1,0 +1,450 @@
+2025-12-10 16:09:32,722 DeMo INFO: Saving model in the path :..
+2025-12-10 16:09:32,722 DeMo INFO: Namespace(config_file='configs/RGBNT201/DeMo_Parallel.yml', exp_name=None, fea_cft=0, local_rank=0, opts=['MODEL.SDTPS_LOSS_WEIGHT', '1.0', 'MODEL.DGAF_LOSS_WEIGHT', '0.0', 'MODEL.FUSED_LOSS_WEIGHT', '0.0'])
+2025-12-10 16:09:32,722 DeMo INFO: Loaded configuration file configs/RGBNT201/DeMo_Parallel.yml
+2025-12-10 16:09:32,722 DeMo INFO: 
+MODEL:
+  ARCH: 'DeMo_Parallel'  # 使用并行架构（9个分类头）
+  TRANSFORMER_TYPE: 'ViT-B-16'
+  STRIDE_SIZE: [ 16, 16 ]
+  SIE_CAMERA: True
+  DIRECT: 1
+  SIE_COE: 1.0
+  ID_LOSS_WEIGHT: 0.25
+  TRIPLET_LOSS_WEIGHT: 1.0
+
+  # Global-Local Fusion: 启用（提升特征表达能力）
+  GLOBAL_LOCAL: True
+
+  # 禁用旧模块（HDM/ATM）
+  HDM: False
+  ATM: False
+  USE_SACR: False
+  USE_MULTIMODAL_SACR: False
+  USE_LIF: False
+
+  # ========== 并行架构核心参数 ==========
+  # SDTPS 配置（分支1）
+  USE_SDTPS: True
+  SDTPS_SPARSE_RATIO: 0.6  # token 保留比例（60%）
+  SDTPS_USE_GUMBEL: False  # 禁用 Gumbel（训练稳定性）
+  SDTPS_GUMBEL_TAU: 5.0
+  SDTPS_CROSS_ATTN_TYPE: 'attention'  # Cross-Attention
+  SDTPS_CROSS_ATTN_HEADS: 4
+  SDTPS_BETA: 0.25         # 保留兼容性
+  SDTPS_AGGR_RATIO: 0.5    # 保留兼容性
+  SDTPS_LOSS_WEIGHT: 1.0   # SDTPS 分支权重（建议1.0）
+
+  # DGAF 配置（分支2）
+  USE_DGAF: True
+  DGAF_VERSION: 'v4'  # V4: 返回3个独立特征
+  DGAF_TAU: 1.0  # 信息熵门控温度
+  DGAF_INIT_ALPHA: 0.5  # IEG 和 MIG 的平衡系数
+  DGAF_LOSS_WEIGHT: 1.0  # DGAF 分支权重（建议1.0）
+
+  # Fused 配置（分支3，辅助监督）
+  FUSED_LOSS_WEIGHT: 0.5  # Fused 分支权重（建议0.5，辅助作用）
+
+  # ========== 过拟合缓解 ==========
+  DROP_OUT: 0.0  # 使用defaults.py中已有的参数
+  IF_LABELSMOOTH: 'on'  # Label Smoothing (注意: 必须是字符串 'on' 或 'off')
+
+  HEAD: 4  # 保留兼容性
+
+INPUT:
+  SIZE_TRAIN: [ 256, 128 ]
+  SIZE_TEST: [ 256, 128 ]
+  PROB: 0.5  # random horizontal flip
+  RE_PROB: 0.5  # random erasing（数据增强）
+  PADDING: 10
+
+DATALOADER:
+  SAMPLER: 'softmax_triplet'
+  NUM_INSTANCE: 4  # 减小以节省显存（原8）
+  NUM_WORKERS: 14
+
+DATASETS:
+  NAMES: ('RGBNT201')
+  ROOT_DIR: '..'
+
+SOLVER:
+  BASE_LR: 0.0003  # 初始学习率（可根据需要调整）
+  WARMUP_ITERS: 5  # Warmup epochs
+  MAX_EPOCHS: 60  # 增加训练轮数（9个分类头需要更多时间）
+  OPTIMIZER_NAME: 'Adam'
+  IMS_PER_BATCH: 48  # 减小 batch size（9个分类头占用更多显存）
+  EVAL_PERIOD: 15
+  WEIGHT_DECAY: 0.0005  # 增大正则化
+
+  # ========== 分支权重（在 processor.py 中使用）==========
+  # 根据分支索引应用不同权重：
+  # - SDTPS (i=0,2,4): SDTPS_LOSS_WEIGHT
+  # - DGAF (i=6,8,10): DGAF_LOSS_WEIGHT
+  # - Fused (i=12,14,16): FUSED_LOSS_WEIGHT
+
+TEST:
+  IMS_PER_BATCH: 128
+  RE_RANKING: 'no'
+  WEIGHT: ''
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+  MISS: "nothing"  # 缺失模态测试：'r', 'n', 't', 'rn', 'rt', 'nt', 'nothing'
+
+OUTPUT_DIR: '..'
+
+2025-12-10 16:09:32,723 DeMo INFO: Running with config:
+DATALOADER:
+  NUM_INSTANCE: 4
+  NUM_WORKERS: 14
+  SAMPLER: softmax_triplet
+DATASETS:
+  NAMES: RGBNT201
+  ROOT_DIR: ..
+INPUT:
+  PADDING: 10
+  PIXEL_MEAN: [0.5, 0.5, 0.5]
+  PIXEL_STD: [0.5, 0.5, 0.5]
+  PROB: 0.5
+  RE_PROB: 0.5
+  SIZE_TEST: [256, 128]
+  SIZE_TRAIN: [256, 128]
+MODEL:
+  ADAPTER: False
+  ARCH: DeMo_Parallel
+  ATM: False
+  ATT_DROP_RATE: 0.0
+  DEVICE: cuda
+  DEVICE_ID: 0
+  DGAF_INIT_ALPHA: 0.5
+  DGAF_LOSS_WEIGHT: 0.0
+  DGAF_NUM_HEADS: 8
+  DGAF_TAU: 1.0
+  DGAF_VERSION: v4
+  DIRECT: 1
+  DIST_TRAIN: False
+  DROP_OUT: 0.0
+  DROP_PATH: 0.1
+  FROZEN: False
+  FUSED_LOSS_WEIGHT: 0.0
+  GLOBAL_LOCAL: True
+  HDM: False
+  HEAD: 4
+  ID_LOSS_TYPE: softmax
+  ID_LOSS_WEIGHT: 0.25
+  IF_LABELSMOOTH: on
+  IF_WITH_CENTER: no
+  LIF_BETA: 0.4
+  LIF_LAYER: 3
+  LIF_LOSS_WEIGHT: 0.1
+  METRIC_LOSS_TYPE: triplet
+  MULTIMODAL_SACR_VERSION: v1
+  NAME: DeMo
+  NECK: bnneck
+  NO_MARGIN: True
+  PRETRAIN_PATH_T: /path/to/your/vitb_16_224_21k.pth
+  PROMPT: False
+  SACR_DILATION_RATES: [2, 3, 4]
+  SDTPS_AGGR_RATIO: 0.5
+  SDTPS_BETA: 0.25
+  SDTPS_CROSS_ATTN_HEADS: 4
+  SDTPS_CROSS_ATTN_TYPE: attention
+  SDTPS_GUMBEL_TAU: 5.0
+  SDTPS_LOSS_WEIGHT: 1.0
+  SDTPS_SHARE_CROSS_ATTN: False
+  SDTPS_SPARSE_RATIO: 0.6
+  SDTPS_USE_GUMBEL: False
+  SIE_CAMERA: True
+  SIE_COE: 1.0
+  SIE_VIEW: False
+  STRIDE_SIZE: [16, 16]
+  TRANSFORMER_TYPE: ViT-B-16
+  TRIPLET_LOSS_WEIGHT: 1.0
+  USE_DGAF: True
+  USE_LIF: False
+  USE_MULTIMODAL_SACR: False
+  USE_SACR: False
+  USE_SDTPS: True
+OUTPUT_DIR: ..
+SOLVER:
+  BASE_LR: 0.0003
+  CENTER_LOSS_WEIGHT: 0.0005
+  CENTER_LR: 0.5
+  CHECKPOINT_PERIOD: 10
+  CLUSTER_MARGIN: 0.3
+  COSINE_MARGIN: 0.5
+  COSINE_SCALE: 30
+  EVAL_PERIOD: 15
+  GAMMA: 0.1
+  IMS_PER_BATCH: 48
+  LARGE_FC_LR: False
+  LOG_PERIOD: 10
+  LR_SCHEDULER: cosine
+  MARGIN: 0.3
+  MAX_EPOCHS: 60
+  MOMENTUM: 0.9
+  OPTIMIZER_NAME: Adam
+  RANGE_ALPHA: 0
+  RANGE_BETA: 1
+  RANGE_K: 2
+  RANGE_LOSS_WEIGHT: 1
+  RANGE_MARGIN: 0.3
+  SEED: 1234
+  STEPS: (40, 70)
+  WARMUP_FACTOR: 0.01
+  WARMUP_ITERS: 5
+  WARMUP_METHOD: linear
+  WEIGHT_DECAY: 0.0005
+  WEIGHT_DECAY_BIAS: 0.0001
+TEST:
+  FEAT: 0
+  FEAT_NORM: yes
+  IMS_PER_BATCH: 128
+  MISS: nothing
+  NECK_FEAT: before
+  RE_RANKING: no
+  WEIGHT: 
+=> RGBNT201 loaded
+Dataset statistics:
+  ----------------------------------------
+  subset   | # ids | # images | # cameras
+  ----------------------------------------
+  train    |   171 |     3951 |         4
+  query    |    30 |      836 |         2
+  gallery  |    30 |      836 |         2
+  ----------------------------------------
+data is ready
+using Transformer_type: ViT-B-16 as a backbone
+Resized position embedding: %s to %s torch.Size([197, 768]) torch.Size([129, 768])
+Position embedding resize to height:16 width: 8
+Successfully load ckpt!
+<All keys matched successfully>
+Loading pretrained model from CLIP
+camera number is : 4
+===========Building DeMo_Parallel (9 heads)===========
+model has no flops
+using soft triplet loss for training
+label smooth on, numclasses: 171
+2025-12-10 16:09:42,259 DeMo INFO: TensorBoard logging to: logs/tensorboard/DeMo_Parallel_20251210_160942
+2025-12-10 16:09:42,260 DeMo INFO: Start TensorBoard with: tensorboard --logdir logs/tensorboard --port 6006
+2025-12-10 16:09:42,261 DeMo.train INFO: start training
+/home/yij/miniconda3/envs/DeMo/lib/python3.8/site-packages/timm/models/helpers.py:7: FutureWarning: Importing from timm.models.helpers is deprecated, please import via timm.models
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.models", FutureWarning)
+/home/yij/miniconda3/envs/DeMo/lib/python3.8/site-packages/timm/models/registry.py:4: FutureWarning: Importing from timm.models.registry is deprecated, please import via timm.models
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.models", FutureWarning)
+/home/yij/miniconda3/envs/DeMo/lib/python3.8/site-packages/timm/models/layers/__init__.py:48: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
+/raid/yij/icme/demo2new/DeMo2/modeling/clip/clip.py:23: UserWarning: PyTorch version 1.7.1 or higher is recommended
+  warnings.warn("PyTorch version 1.7.1 or higher is recommended")
+/home/yij/miniconda3/envs/DeMo/lib/python3.8/site-packages/torchvision/transforms/transforms.py:329: UserWarning: Argument 'interpolation' of type int is deprecated since 0.13 and will be removed in 0.15. Please use InterpolationMode enum.
+  warnings.warn(
+/home/yij/miniconda3/envs/DeMo/lib/python3.8/site-packages/torch/optim/lr_scheduler.py:138: UserWarning: Detected call of `lr_scheduler.step()` before `optimizer.step()`. In PyTorch 1.1.0 and later, you should call them in the opposite order: `optimizer.step()` before `lr_scheduler.step()`.  Failure to do this will result in PyTorch skipping the first value of the learning rate schedule. See more details at https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate
+  warnings.warn("Detected call of `lr_scheduler.step()` before `optimizer.step()`. "
+/home/yij/miniconda3/envs/DeMo/lib/python3.8/site-packages/torch/optim/lr_scheduler.py:163: UserWarning: The epoch parameter in `scheduler.step()` was not necessary and is being deprecated where possible. Please use `scheduler.step()` to step the scheduler. During the deprecation, if epoch is different from None, the closed form is used instead of the new chainable form, where available. Please open an issue if you are unable to replicate your use case: https://github.com/pytorch/pytorch/issues/new/choose.
+  warnings.warn(EPOCH_DEPRECATION_WARNING, UserWarning)
+2025-12-10 16:09:49,404 DeMo.train INFO: Epoch[1] Iteration[10/78] Loss: 25.062, Acc: 0.000, Base Lr: 6.24e-05
+2025-12-10 16:09:51,740 DeMo.train INFO: Epoch[1] Iteration[20/78] Loss: 22.013, Acc: 0.006, Base Lr: 6.24e-05
+2025-12-10 16:09:54,085 DeMo.train INFO: Epoch[1] Iteration[30/78] Loss: 20.810, Acc: 0.013, Base Lr: 6.24e-05
+2025-12-10 16:09:56,443 DeMo.train INFO: Epoch[1] Iteration[40/78] Loss: 20.088, Acc: 0.022, Base Lr: 6.24e-05
+2025-12-10 16:09:58,762 DeMo.train INFO: Epoch[1] Iteration[50/78] Loss: 19.649, Acc: 0.035, Base Lr: 6.24e-05
+2025-12-10 16:10:01,089 DeMo.train INFO: Epoch[1] Iteration[60/78] Loss: 19.291, Acc: 0.040, Base Lr: 6.24e-05
+2025-12-10 16:10:03,425 DeMo.train INFO: Epoch[1] Iteration[70/78] Loss: 18.996, Acc: 0.058, Base Lr: 6.24e-05
+2025-12-10 16:10:05,144 DeMo.train INFO: Epoch 1 done. Time per batch: 0.297[s] Speed: 161.6[samples/s]
+2025-12-10 16:10:08,623 DeMo.train INFO: Epoch[2] Iteration[10/78] Loss: 17.576, Acc: 0.150, Base Lr: 1.22e-04
+2025-12-10 16:10:11,072 DeMo.train INFO: Epoch[2] Iteration[20/78] Loss: 17.370, Acc: 0.150, Base Lr: 1.22e-04
+2025-12-10 16:10:13,418 DeMo.train INFO: Epoch[2] Iteration[30/78] Loss: 17.339, Acc: 0.149, Base Lr: 1.22e-04
+2025-12-10 16:10:15,781 DeMo.train INFO: Epoch[2] Iteration[40/78] Loss: 17.217, Acc: 0.151, Base Lr: 1.22e-04
+2025-12-10 16:10:18,142 DeMo.train INFO: Epoch[2] Iteration[50/78] Loss: 17.139, Acc: 0.161, Base Lr: 1.22e-04
+2025-12-10 16:10:20,629 DeMo.train INFO: Epoch[2] Iteration[60/78] Loss: 16.993, Acc: 0.156, Base Lr: 1.22e-04
+2025-12-10 16:10:22,993 DeMo.train INFO: Epoch[2] Iteration[70/78] Loss: 16.886, Acc: 0.160, Base Lr: 1.22e-04
+2025-12-10 16:10:24,747 DeMo.train INFO: Epoch 2 done. Time per batch: 0.255[s] Speed: 188.6[samples/s]
+2025-12-10 16:10:28,235 DeMo.train INFO: Epoch[3] Iteration[10/78] Loss: 16.270, Acc: 0.285, Base Lr: 1.81e-04
+2025-12-10 16:10:30,686 DeMo.train INFO: Epoch[3] Iteration[20/78] Loss: 16.262, Acc: 0.260, Base Lr: 1.81e-04
+2025-12-10 16:10:33,029 DeMo.train INFO: Epoch[3] Iteration[30/78] Loss: 16.091, Acc: 0.249, Base Lr: 1.81e-04
+2025-12-10 16:10:35,400 DeMo.train INFO: Epoch[3] Iteration[40/78] Loss: 15.969, Acc: 0.232, Base Lr: 1.81e-04
+2025-12-10 16:10:37,761 DeMo.train INFO: Epoch[3] Iteration[50/78] Loss: 15.912, Acc: 0.210, Base Lr: 1.81e-04
+2025-12-10 16:10:40,117 DeMo.train INFO: Epoch[3] Iteration[60/78] Loss: 15.747, Acc: 0.214, Base Lr: 1.81e-04
+2025-12-10 16:10:42,458 DeMo.train INFO: Epoch[3] Iteration[70/78] Loss: 15.650, Acc: 0.212, Base Lr: 1.81e-04
+2025-12-10 16:10:44,164 DeMo.train INFO: Epoch 3 done. Time per batch: 0.255[s] Speed: 187.9[samples/s]
+2025-12-10 16:10:47,939 DeMo.train INFO: Epoch[4] Iteration[10/78] Loss: 14.454, Acc: 0.356, Base Lr: 2.41e-04
+2025-12-10 16:10:50,327 DeMo.train INFO: Epoch[4] Iteration[20/78] Loss: 14.555, Acc: 0.306, Base Lr: 2.41e-04
+2025-12-10 16:10:52,667 DeMo.train INFO: Epoch[4] Iteration[30/78] Loss: 14.470, Acc: 0.297, Base Lr: 2.41e-04
+2025-12-10 16:10:55,014 DeMo.train INFO: Epoch[4] Iteration[40/78] Loss: 14.431, Acc: 0.305, Base Lr: 2.41e-04
+2025-12-10 16:10:57,363 DeMo.train INFO: Epoch[4] Iteration[50/78] Loss: 14.394, Acc: 0.305, Base Lr: 2.41e-04
+2025-12-10 16:10:59,704 DeMo.train INFO: Epoch[4] Iteration[60/78] Loss: 14.346, Acc: 0.287, Base Lr: 2.41e-04
+2025-12-10 16:11:02,039 DeMo.train INFO: Epoch[4] Iteration[70/78] Loss: 14.271, Acc: 0.285, Base Lr: 2.41e-04
+2025-12-10 16:11:03,557 DeMo.train INFO: Epoch 4 done. Time per batch: 0.255[s] Speed: 188.1[samples/s]
+2025-12-10 16:11:07,019 DeMo.train INFO: Epoch[5] Iteration[10/78] Loss: 13.578, Acc: 0.406, Base Lr: 3.00e-04
+2025-12-10 16:11:09,376 DeMo.train INFO: Epoch[5] Iteration[20/78] Loss: 13.423, Acc: 0.393, Base Lr: 3.00e-04
+2025-12-10 16:11:11,721 DeMo.train INFO: Epoch[5] Iteration[30/78] Loss: 13.360, Acc: 0.390, Base Lr: 3.00e-04
+2025-12-10 16:11:14,076 DeMo.train INFO: Epoch[5] Iteration[40/78] Loss: 13.893, Acc: 0.337, Base Lr: 3.00e-04
+2025-12-10 16:11:16,427 DeMo.train INFO: Epoch[5] Iteration[50/78] Loss: 13.904, Acc: 0.323, Base Lr: 3.00e-04
+2025-12-10 16:11:18,758 DeMo.train INFO: Epoch[5] Iteration[60/78] Loss: 13.748, Acc: 0.314, Base Lr: 3.00e-04
+2025-12-10 16:11:21,109 DeMo.train INFO: Epoch[5] Iteration[70/78] Loss: 13.735, Acc: 0.301, Base Lr: 3.00e-04
+2025-12-10 16:11:22,870 DeMo.train INFO: Epoch 5 done. Time per batch: 0.251[s] Speed: 191.4[samples/s]
+2025-12-10 16:11:26,496 DeMo.train INFO: Epoch[6] Iteration[10/78] Loss: 12.636, Acc: 0.448, Base Lr: 3.00e-04
+2025-12-10 16:11:28,852 DeMo.train INFO: Epoch[6] Iteration[20/78] Loss: 12.877, Acc: 0.401, Base Lr: 3.00e-04
+2025-12-10 16:11:31,230 DeMo.train INFO: Epoch[6] Iteration[30/78] Loss: 12.652, Acc: 0.409, Base Lr: 3.00e-04
+2025-12-10 16:11:33,586 DeMo.train INFO: Epoch[6] Iteration[40/78] Loss: 12.424, Acc: 0.417, Base Lr: 3.00e-04
+2025-12-10 16:11:35,926 DeMo.train INFO: Epoch[6] Iteration[50/78] Loss: 12.282, Acc: 0.425, Base Lr: 3.00e-04
+2025-12-10 16:11:38,275 DeMo.train INFO: Epoch[6] Iteration[60/78] Loss: 12.143, Acc: 0.443, Base Lr: 3.00e-04
+2025-12-10 16:11:40,594 DeMo.train INFO: Epoch[6] Iteration[70/78] Loss: 12.069, Acc: 0.445, Base Lr: 3.00e-04
+2025-12-10 16:11:42,342 DeMo.train INFO: Epoch 6 done. Time per batch: 0.253[s] Speed: 189.8[samples/s]
+2025-12-10 16:11:45,807 DeMo.train INFO: Epoch[7] Iteration[10/78] Loss: 11.330, Acc: 0.506, Base Lr: 3.00e-04
+2025-12-10 16:11:48,167 DeMo.train INFO: Epoch[7] Iteration[20/78] Loss: 11.367, Acc: 0.521, Base Lr: 3.00e-04
+2025-12-10 16:11:50,550 DeMo.train INFO: Epoch[7] Iteration[30/78] Loss: 11.114, Acc: 0.517, Base Lr: 3.00e-04
+2025-12-10 16:11:52,901 DeMo.train INFO: Epoch[7] Iteration[40/78] Loss: 11.096, Acc: 0.511, Base Lr: 3.00e-04
+2025-12-10 16:11:55,258 DeMo.train INFO: Epoch[7] Iteration[50/78] Loss: 10.898, Acc: 0.513, Base Lr: 3.00e-04
+2025-12-10 16:11:57,602 DeMo.train INFO: Epoch[7] Iteration[60/78] Loss: 10.923, Acc: 0.509, Base Lr: 3.00e-04
+2025-12-10 16:11:59,935 DeMo.train INFO: Epoch[7] Iteration[70/78] Loss: 10.997, Acc: 0.510, Base Lr: 3.00e-04
+2025-12-10 16:12:01,722 DeMo.train INFO: Epoch 7 done. Time per batch: 0.252[s] Speed: 190.7[samples/s]
+2025-12-10 16:12:05,195 DeMo.train INFO: Epoch[8] Iteration[10/78] Loss: 10.056, Acc: 0.552, Base Lr: 3.00e-04
+2025-12-10 16:12:07,559 DeMo.train INFO: Epoch[8] Iteration[20/78] Loss: 9.660, Acc: 0.589, Base Lr: 3.00e-04
+2025-12-10 16:12:09,920 DeMo.train INFO: Epoch[8] Iteration[30/78] Loss: 9.711, Acc: 0.594, Base Lr: 3.00e-04
+2025-12-10 16:12:12,279 DeMo.train INFO: Epoch[8] Iteration[40/78] Loss: 9.676, Acc: 0.618, Base Lr: 3.00e-04
+2025-12-10 16:12:14,633 DeMo.train INFO: Epoch[8] Iteration[50/78] Loss: 9.585, Acc: 0.623, Base Lr: 3.00e-04
+2025-12-10 16:12:16,980 DeMo.train INFO: Epoch[8] Iteration[60/78] Loss: 9.646, Acc: 0.623, Base Lr: 3.00e-04
+2025-12-10 16:12:19,315 DeMo.train INFO: Epoch[8] Iteration[70/78] Loss: 9.752, Acc: 0.621, Base Lr: 3.00e-04
+2025-12-10 16:12:21,070 DeMo.train INFO: Epoch 8 done. Time per batch: 0.251[s] Speed: 191.0[samples/s]
+2025-12-10 16:12:24,733 DeMo.train INFO: Epoch[9] Iteration[10/78] Loss: 9.370, Acc: 0.685, Base Lr: 3.00e-04
+2025-12-10 16:12:27,091 DeMo.train INFO: Epoch[9] Iteration[20/78] Loss: 9.138, Acc: 0.690, Base Lr: 3.00e-04
+2025-12-10 16:12:29,431 DeMo.train INFO: Epoch[9] Iteration[30/78] Loss: 8.951, Acc: 0.678, Base Lr: 3.00e-04
+2025-12-10 16:12:31,834 DeMo.train INFO: Epoch[9] Iteration[40/78] Loss: 8.965, Acc: 0.674, Base Lr: 3.00e-04
+2025-12-10 16:12:34,190 DeMo.train INFO: Epoch[9] Iteration[50/78] Loss: 9.041, Acc: 0.684, Base Lr: 3.00e-04
+2025-12-10 16:12:36,520 DeMo.train INFO: Epoch[9] Iteration[60/78] Loss: 8.946, Acc: 0.685, Base Lr: 3.00e-04
+2025-12-10 16:12:38,848 DeMo.train INFO: Epoch[9] Iteration[70/78] Loss: 8.936, Acc: 0.684, Base Lr: 3.00e-04
+2025-12-10 16:12:40,359 DeMo.train INFO: Epoch 9 done. Time per batch: 0.254[s] Speed: 189.1[samples/s]
+2025-12-10 16:12:43,754 DeMo.train INFO: Epoch[10] Iteration[10/78] Loss: 8.433, Acc: 0.654, Base Lr: 3.00e-04
+2025-12-10 16:12:46,528 DeMo.train INFO: Epoch[10] Iteration[20/78] Loss: 8.465, Acc: 0.684, Base Lr: 3.00e-04
+2025-12-10 16:12:48,899 DeMo.train INFO: Epoch[10] Iteration[30/78] Loss: 8.614, Acc: 0.688, Base Lr: 3.00e-04
+2025-12-10 16:12:51,262 DeMo.train INFO: Epoch[10] Iteration[40/78] Loss: 8.590, Acc: 0.689, Base Lr: 3.00e-04
+2025-12-10 16:12:53,621 DeMo.train INFO: Epoch[10] Iteration[50/78] Loss: 8.548, Acc: 0.699, Base Lr: 3.00e-04
+2025-12-10 16:12:55,980 DeMo.train INFO: Epoch[10] Iteration[60/78] Loss: 8.571, Acc: 0.702, Base Lr: 3.00e-04
+2025-12-10 16:12:58,321 DeMo.train INFO: Epoch[10] Iteration[70/78] Loss: 8.527, Acc: 0.708, Base Lr: 3.00e-04
+2025-12-10 16:13:00,079 DeMo.train INFO: Epoch 10 done. Time per batch: 0.256[s] Speed: 187.4[samples/s]
+2025-12-10 16:13:03,565 DeMo.train INFO: Epoch[11] Iteration[10/78] Loss: 7.865, Acc: 0.733, Base Lr: 3.00e-04
+2025-12-10 16:13:05,936 DeMo.train INFO: Epoch[11] Iteration[20/78] Loss: 7.698, Acc: 0.751, Base Lr: 3.00e-04
+2025-12-10 16:13:08,304 DeMo.train INFO: Epoch[11] Iteration[30/78] Loss: 7.824, Acc: 0.731, Base Lr: 3.00e-04
+2025-12-10 16:13:10,672 DeMo.train INFO: Epoch[11] Iteration[40/78] Loss: 7.843, Acc: 0.738, Base Lr: 3.00e-04
+2025-12-10 16:13:13,037 DeMo.train INFO: Epoch[11] Iteration[50/78] Loss: 7.748, Acc: 0.746, Base Lr: 3.00e-04
+2025-12-10 16:13:15,382 DeMo.train INFO: Epoch[11] Iteration[60/78] Loss: 7.685, Acc: 0.751, Base Lr: 3.00e-04
+2025-12-10 16:13:17,707 DeMo.train INFO: Epoch[11] Iteration[70/78] Loss: 7.714, Acc: 0.754, Base Lr: 3.00e-04
+2025-12-10 16:13:19,462 DeMo.train INFO: Epoch 11 done. Time per batch: 0.252[s] Speed: 190.7[samples/s]
+2025-12-10 16:13:22,925 DeMo.train INFO: Epoch[12] Iteration[10/78] Loss: 7.778, Acc: 0.756, Base Lr: 3.00e-04
+2025-12-10 16:13:25,285 DeMo.train INFO: Epoch[12] Iteration[20/78] Loss: 7.760, Acc: 0.750, Base Lr: 3.00e-04
+2025-12-10 16:13:27,658 DeMo.train INFO: Epoch[12] Iteration[30/78] Loss: 7.707, Acc: 0.770, Base Lr: 3.00e-04
+2025-12-10 16:13:30,019 DeMo.train INFO: Epoch[12] Iteration[40/78] Loss: 7.695, Acc: 0.786, Base Lr: 3.00e-04
+2025-12-10 16:13:32,394 DeMo.train INFO: Epoch[12] Iteration[50/78] Loss: 7.631, Acc: 0.781, Base Lr: 3.00e-04
+2025-12-10 16:13:34,723 DeMo.train INFO: Epoch[12] Iteration[60/78] Loss: 7.441, Acc: 0.792, Base Lr: 3.00e-04
+2025-12-10 16:13:37,039 DeMo.train INFO: Epoch[12] Iteration[70/78] Loss: 7.367, Acc: 0.792, Base Lr: 3.00e-04
+2025-12-10 16:13:38,783 DeMo.train INFO: Epoch 12 done. Time per batch: 0.251[s] Speed: 191.3[samples/s]
+2025-12-10 16:13:42,530 DeMo.train INFO: Epoch[13] Iteration[10/78] Loss: 6.727, Acc: 0.827, Base Lr: 3.00e-04
+2025-12-10 16:13:44,882 DeMo.train INFO: Epoch[13] Iteration[20/78] Loss: 6.818, Acc: 0.809, Base Lr: 3.00e-04
+2025-12-10 16:13:47,228 DeMo.train INFO: Epoch[13] Iteration[30/78] Loss: 6.737, Acc: 0.826, Base Lr: 3.00e-04
+2025-12-10 16:13:49,585 DeMo.train INFO: Epoch[13] Iteration[40/78] Loss: 6.844, Acc: 0.826, Base Lr: 3.00e-04
+2025-12-10 16:13:51,949 DeMo.train INFO: Epoch[13] Iteration[50/78] Loss: 6.858, Acc: 0.824, Base Lr: 3.00e-04
+2025-12-10 16:13:54,300 DeMo.train INFO: Epoch[13] Iteration[60/78] Loss: 6.813, Acc: 0.824, Base Lr: 3.00e-04
+2025-12-10 16:13:56,635 DeMo.train INFO: Epoch[13] Iteration[70/78] Loss: 6.873, Acc: 0.821, Base Lr: 3.00e-04
+2025-12-10 16:13:58,482 DeMo.train INFO: Epoch 13 done. Time per batch: 0.256[s] Speed: 187.6[samples/s]
+2025-12-10 16:14:01,822 DeMo.train INFO: Epoch[14] Iteration[10/78] Loss: 6.257, Acc: 0.815, Base Lr: 3.00e-04
+2025-12-10 16:14:04,432 DeMo.train INFO: Epoch[14] Iteration[20/78] Loss: 6.015, Acc: 0.836, Base Lr: 3.00e-04
+2025-12-10 16:14:06,777 DeMo.train INFO: Epoch[14] Iteration[30/78] Loss: 6.190, Acc: 0.847, Base Lr: 3.00e-04
+2025-12-10 16:14:09,131 DeMo.train INFO: Epoch[14] Iteration[40/78] Loss: 6.195, Acc: 0.854, Base Lr: 3.00e-04
+2025-12-10 16:14:11,494 DeMo.train INFO: Epoch[14] Iteration[50/78] Loss: 6.208, Acc: 0.847, Base Lr: 3.00e-04
+2025-12-10 16:14:13,840 DeMo.train INFO: Epoch[14] Iteration[60/78] Loss: 6.182, Acc: 0.849, Base Lr: 3.00e-04
+2025-12-10 16:14:16,186 DeMo.train INFO: Epoch[14] Iteration[70/78] Loss: 6.219, Acc: 0.845, Base Lr: 3.00e-04
+2025-12-10 16:14:17,699 DeMo.train INFO: Epoch 14 done. Time per batch: 0.253[s] Speed: 189.8[samples/s]
+2025-12-10 16:14:21,201 DeMo.train INFO: Epoch[15] Iteration[10/78] Loss: 6.388, Acc: 0.846, Base Lr: 3.00e-04
+2025-12-10 16:14:24,053 DeMo.train INFO: Epoch[15] Iteration[20/78] Loss: 6.506, Acc: 0.822, Base Lr: 3.00e-04
+2025-12-10 16:14:26,415 DeMo.train INFO: Epoch[15] Iteration[30/78] Loss: 6.488, Acc: 0.835, Base Lr: 3.00e-04
+2025-12-10 16:14:28,799 DeMo.train INFO: Epoch[15] Iteration[40/78] Loss: 6.424, Acc: 0.835, Base Lr: 3.00e-04
+2025-12-10 16:14:31,195 DeMo.train INFO: Epoch[15] Iteration[50/78] Loss: 6.254, Acc: 0.840, Base Lr: 3.00e-04
+2025-12-10 16:14:33,563 DeMo.train INFO: Epoch[15] Iteration[60/78] Loss: 6.299, Acc: 0.838, Base Lr: 3.00e-04
+2025-12-10 16:14:35,909 DeMo.train INFO: Epoch[15] Iteration[70/78] Loss: 6.336, Acc: 0.840, Base Lr: 3.00e-04
+2025-12-10 16:14:37,666 DeMo.train INFO: Epoch 15 done. Time per batch: 0.259[s] Speed: 185.1[samples/s]
+2025-12-10 16:14:37,667 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-10 16:14:37,667 DeMo.train INFO: Current is the ori feature testing!
+2025-12-10 16:14:37,668 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-10 16:14:43,490 DeMo.train INFO: Validation Results - Epoch: 15
+2025-12-10 16:14:43,490 DeMo.train INFO: mAP: 38.2%
+2025-12-10 16:14:43,490 DeMo.train INFO: CMC curve, Rank-1  :39.1%
+2025-12-10 16:14:43,490 DeMo.train INFO: CMC curve, Rank-5  :53.2%
+2025-12-10 16:14:43,490 DeMo.train INFO: CMC curve, Rank-10 :60.2%
+2025-12-10 16:14:43,491 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-10 16:14:43,494 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-10 16:14:43,494 DeMo.train INFO: Current is the moe feature testing!
+2025-12-10 16:14:43,494 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-10 16:14:48,871 DeMo.train INFO: Validation Results - Epoch: 15
+2025-12-10 16:14:48,872 DeMo.train INFO: mAP: 38.2%
+2025-12-10 16:14:48,872 DeMo.train INFO: CMC curve, Rank-1  :39.1%
+2025-12-10 16:14:48,872 DeMo.train INFO: CMC curve, Rank-5  :53.2%
+2025-12-10 16:14:48,872 DeMo.train INFO: CMC curve, Rank-10 :60.2%
+2025-12-10 16:14:48,872 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-10 16:14:48,879 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-10 16:14:48,879 DeMo.train INFO: Current is the [moe,ori] feature testing!
+2025-12-10 16:14:48,880 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The test feature is normalized
+=> Computing DistMat with euclidean_distance
+2025-12-10 16:14:53,975 DeMo.train INFO: Validation Results - Epoch: 15
+2025-12-10 16:14:53,975 DeMo.train INFO: mAP: 38.2%
+2025-12-10 16:14:53,975 DeMo.train INFO: CMC curve, Rank-1  :39.1%
+2025-12-10 16:14:53,975 DeMo.train INFO: CMC curve, Rank-5  :53.2%
+2025-12-10 16:14:53,976 DeMo.train INFO: CMC curve, Rank-10 :60.2%
+2025-12-10 16:14:53,976 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-10 16:14:55,326 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-10 16:14:55,327 DeMo.train INFO: Best mAP: 38.2%
+2025-12-10 16:14:55,327 DeMo.train INFO: Best Rank-1: 39.1%
+2025-12-10 16:14:55,327 DeMo.train INFO: Best Rank-5: 53.2%
+2025-12-10 16:14:55,327 DeMo.train INFO: Best Rank-10: 60.2%
+2025-12-10 16:14:55,327 DeMo.train INFO: ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2025-12-10 16:14:59,567 DeMo.train INFO: Epoch[16] Iteration[10/78] Loss: 6.004, Acc: 0.833, Base Lr: 3.00e-04
+2025-12-10 16:15:01,939 DeMo.train INFO: Epoch[16] Iteration[20/78] Loss: 5.858, Acc: 0.865, Base Lr: 3.00e-04
+2025-12-10 16:15:04,343 DeMo.train INFO: Epoch[16] Iteration[30/78] Loss: 5.792, Acc: 0.874, Base Lr: 3.00e-04
+2025-12-10 16:15:06,697 DeMo.train INFO: Epoch[16] Iteration[40/78] Loss: 5.935, Acc: 0.874, Base Lr: 3.00e-04
+2025-12-10 16:15:09,130 DeMo.train INFO: Epoch[16] Iteration[50/78] Loss: 5.994, Acc: 0.874, Base Lr: 3.00e-04
+2025-12-10 16:15:11,541 DeMo.train INFO: Epoch[16] Iteration[60/78] Loss: 5.998, Acc: 0.874, Base Lr: 3.00e-04
+2025-12-10 16:15:13,916 DeMo.train INFO: Epoch[16] Iteration[70/78] Loss: 6.062, Acc: 0.872, Base Lr: 3.00e-04
+2025-12-10 16:15:15,449 DeMo.train INFO: Epoch 16 done. Time per batch: 0.265[s] Speed: 181.3[samples/s]
+2025-12-10 16:15:18,909 DeMo.train INFO: Epoch[17] Iteration[10/78] Loss: 5.958, Acc: 0.821, Base Lr: 3.00e-04
+2025-12-10 16:15:21,273 DeMo.train INFO: Epoch[17] Iteration[20/78] Loss: 5.731, Acc: 0.854, Base Lr: 3.00e-04
+2025-12-10 16:15:23,624 DeMo.train INFO: Epoch[17] Iteration[30/78] Loss: 5.650, Acc: 0.849, Base Lr: 3.00e-04
+2025-12-10 16:15:25,991 DeMo.train INFO: Epoch[17] Iteration[40/78] Loss: 5.818, Acc: 0.845, Base Lr: 3.00e-04
+2025-12-10 16:15:28,432 DeMo.train INFO: Epoch[17] Iteration[50/78] Loss: 5.839, Acc: 0.848, Base Lr: 3.00e-04
+2025-12-10 16:15:30,875 DeMo.train INFO: Epoch[17] Iteration[60/78] Loss: 5.768, Acc: 0.856, Base Lr: 3.00e-04
+2025-12-10 16:15:33,228 DeMo.train INFO: Epoch[17] Iteration[70/78] Loss: 5.769, Acc: 0.865, Base Lr: 3.00e-04
+2025-12-10 16:15:35,003 DeMo.train INFO: Epoch 17 done. Time per batch: 0.254[s] Speed: 189.0[samples/s]
+2025-12-10 16:15:38,422 DeMo.train INFO: Epoch[18] Iteration[10/78] Loss: 4.845, Acc: 0.927, Base Lr: 3.00e-04
+2025-12-10 16:15:40,786 DeMo.train INFO: Epoch[18] Iteration[20/78] Loss: 4.829, Acc: 0.917, Base Lr: 3.00e-04
+2025-12-10 16:15:43,147 DeMo.train INFO: Epoch[18] Iteration[30/78] Loss: 4.956, Acc: 0.904, Base Lr: 3.00e-04
+2025-12-10 16:15:45,523 DeMo.train INFO: Epoch[18] Iteration[40/78] Loss: 4.973, Acc: 0.905, Base Lr: 3.00e-04
+2025-12-10 16:15:47,901 DeMo.train INFO: Epoch[18] Iteration[50/78] Loss: 5.113, Acc: 0.896, Base Lr: 3.00e-04
+2025-12-10 16:15:50,333 DeMo.train INFO: Epoch[18] Iteration[60/78] Loss: 5.177, Acc: 0.890, Base Lr: 3.00e-04
+2025-12-10 16:15:52,694 DeMo.train INFO: Epoch[18] Iteration[70/78] Loss: 5.263, Acc: 0.888, Base Lr: 3.00e-04
+2025-12-10 16:15:54,465 DeMo.train INFO: Epoch 18 done. Time per batch: 0.253[s] Speed: 189.9[samples/s]
+2025-12-10 16:15:57,765 DeMo.train INFO: Epoch[19] Iteration[10/78] Loss: 5.729, Acc: 0.865, Base Lr: 3.00e-04
+2025-12-10 16:16:00,664 DeMo.train INFO: Epoch[19] Iteration[20/78] Loss: 5.336, Acc: 0.885, Base Lr: 3.00e-04
+2025-12-10 16:16:03,016 DeMo.train INFO: Epoch[19] Iteration[30/78] Loss: 5.319, Acc: 0.883, Base Lr: 3.00e-04
+2025-12-10 16:16:05,380 DeMo.train INFO: Epoch[19] Iteration[40/78] Loss: 5.267, Acc: 0.889, Base Lr: 3.00e-04
+2025-12-10 16:16:07,820 DeMo.train INFO: Epoch[19] Iteration[50/78] Loss: 5.361, Acc: 0.885, Base Lr: 3.00e-04
+2025-12-10 16:16:10,310 DeMo.train INFO: Epoch[19] Iteration[60/78] Loss: 5.388, Acc: 0.885, Base Lr: 3.00e-04
+2025-12-10 16:16:12,663 DeMo.train INFO: Epoch[19] Iteration[70/78] Loss: 5.403, Acc: 0.889, Base Lr: 3.00e-04
+2025-12-10 16:16:14,412 DeMo.train INFO: Epoch 19 done. Time per batch: 0.259[s] Speed: 185.3[samples/s]
+2025-12-10 16:16:17,848 DeMo.train INFO: Epoch[20] Iteration[10/78] Loss: 4.816, Acc: 0.917, Base Lr: 3.00e-04
+2025-12-10 16:16:20,254 DeMo.train INFO: Epoch[20] Iteration[20/78] Loss: 4.867, Acc: 0.917, Base Lr: 3.00e-04
+2025-12-10 16:16:22,596 DeMo.train INFO: Epoch[20] Iteration[30/78] Loss: 4.819, Acc: 0.921, Base Lr: 3.00e-04
+2025-12-10 16:16:24,968 DeMo.train INFO: Epoch[20] Iteration[40/78] Loss: 4.871, Acc: 0.919, Base Lr: 3.00e-04
+2025-12-10 16:16:27,354 DeMo.train INFO: Epoch[20] Iteration[50/78] Loss: 4.938, Acc: 0.915, Base Lr: 3.00e-04
+2025-12-10 16:16:29,820 DeMo.train INFO: Epoch[20] Iteration[60/78] Loss: 4.964, Acc: 0.913, Base Lr: 3.00e-04
+2025-12-10 16:16:32,181 DeMo.train INFO: Epoch[20] Iteration[70/78] Loss: 4.948, Acc: 0.912, Base Lr: 3.00e-04
+2025-12-10 16:16:33,957 DeMo.train INFO: Epoch 20 done. Time per batch: 0.254[s] Speed: 189.1[samples/s]
+2025-12-10 16:16:37,270 DeMo.train INFO: Epoch[21] Iteration[10/78] Loss: 4.877, Acc: 0.898, Base Lr: 3.00e-04
+2025-12-10 16:16:39,667 DeMo.train INFO: Epoch[21] Iteration[20/78] Loss: 4.940, Acc: 0.891, Base Lr: 3.00e-04
+2025-12-10 16:16:42,019 DeMo.train INFO: Epoch[21] Iteration[30/78] Loss: 4.953, Acc: 0.895, Base Lr: 3.00e-04
+2025-12-10 16:16:44,387 DeMo.train INFO: Epoch[21] Iteration[40/78] Loss: 4.942, Acc: 0.898, Base Lr: 3.00e-04
+2025-12-10 16:16:46,819 DeMo.train INFO: Epoch[21] Iteration[50/78] Loss: 4.851, Acc: 0.902, Base Lr: 3.00e-04
+2025-12-10 16:16:49,218 DeMo.train INFO: Epoch[21] Iteration[60/78] Loss: 4.839, Acc: 0.906, Base Lr: 3.00e-04
+2025-12-10 16:16:51,575 DeMo.train INFO: Epoch[21] Iteration[70/78] Loss: 4.932, Acc: 0.903, Base Lr: 3.00e-04
+2025-12-10 16:16:53,339 DeMo.train INFO: Epoch 21 done. Time per batch: 0.252[s] Speed: 190.7[samples/s]
+2025-12-10 16:16:56,681 DeMo.train INFO: Epoch[22] Iteration[10/78] Loss: 5.220, Acc: 0.883, Base Lr: 3.00e-04
